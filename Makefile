@@ -1,6 +1,6 @@
 TARGET = tproxy
 CC = gcc
-CFLAGS = -g -Wall -Wextra
+CFLAGS = -g -Wall -Wextra -O3 -std=c2x
 
 .PHONY: default all clean run
 
