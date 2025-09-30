@@ -1,3 +1,4 @@
+#include "tproxy.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <limits.h>
@@ -11,6 +12,7 @@
 #include <unistd.h>
 
 /*
+ * Setup iptables and forwarding by running a shell script directly from C code
  * Create a socket
  * Set options like SO_REUSADDR and IP_TRANSPARENT
  * Bind socket to address
@@ -18,6 +20,7 @@
  * Create an infinite loop to accept connections (use threads or async IO)
  * Forward data to destination address
  * Get answer from destination and forward it to source
+ * On exit, try to restore iptables and other forwarding rules
  */
 
 #define HOST "0.0.0.0"
@@ -25,7 +28,7 @@
 #define MAX_CONNECTIONS INT_MAX
 #define BUF_SIZE (32 * 1024)
 
-int main(int argc, char** argv)
+int create_tproxy_server(char* host, int port)
 {
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
@@ -42,12 +45,12 @@ int main(int argc, char** argv)
         exit(EXIT_FAILURE);
     }
     struct sockaddr_in server_addr = { 0 };
-    if (inet_aton(HOST, &server_addr.sin_addr) == 0) {
-        printf("%s is not valid IP address\n", HOST);
+    if (inet_pton(AF_INET, host, &server_addr.sin_addr) < 0) {
+        printf("%s is not valid IP address\n", host);
         exit(EXIT_FAILURE);
     }
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(PORT);
+    server_addr.sin_port = htons(port);
     if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
         printf("Binding to address failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
@@ -56,7 +59,33 @@ int main(int argc, char** argv)
         printf("Listening on address failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
-    printf("tproxy listening on %s:%d\n", HOST, PORT);
+    printf("tproxy listening on %s:%d\n", host, port);
+    return server_sock;
+}
+
+void usage(void)
+{
+    printf("Usage: tproxy <host> <port>\n");
+    exit(EXIT_FAILURE);
+}
+
+int main(int argc, char** argv)
+{
+    char* ip;
+    int port;
+    if (argc == 3) {
+        ip = argv[1];
+        port = atoi(argv[2]);
+        if (port < 0 || port > 65535) {
+            usage();
+        }
+    } else if (argc > 1) {
+        usage();
+    } else {
+        ip = HOST;
+        port = PORT;
+    }
+    int server_sock = create_tproxy_server(ip, port);
     while (true) {
         char buf[BUF_SIZE] = { 0 };
         struct sockaddr_in client_addr = { 0 };
