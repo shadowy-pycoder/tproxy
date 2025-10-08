@@ -1,8 +1,10 @@
 TARGET = tproxy
 CC = gcc
-CFLAGS = -g -Wall -Wextra -O3 -std=c2x
+CFLAGS = -g -Wall -Wextra -Werror -Os -std=c2x -march=native
+SERVER_HOST =  0.0.0.0
+SERVER_PORT = 8888
 
-.PHONY: default all clean run
+.PHONY: default all clean run stop
 
 default: $(TARGET)
 all: default
@@ -23,5 +25,9 @@ clean:
 	-rm -f $(TARGET)
 
 run: $(TARGET)
-	sudo ./$(TARGET)
+	sudo ./scripts/set_iptables_rules.sh $(SERVER_PORT)
+	sudo ./$(TARGET) $(SERVER_HOST) $(SERVER_PORT)
+
+stop:
+	sudo ./scripts/clear_iptables_rules.sh
 
