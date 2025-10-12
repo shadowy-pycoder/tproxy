@@ -21,8 +21,36 @@
  *
  * This function either returns a valid file descriptor or exits with non-zero status code
  */
+#include <netinet/in.h>
+
+#define ADDR_SIZE 50
+
 int create_tproxy_server(char* host, int port);
 
 void usage(void);
+
+typedef struct {
+    int port;
+    char addr_str[ADDR_SIZE];
+} Address;
+
+typedef struct {
+    int sock;
+    Address addr;
+} Client;
+
+typedef struct {
+    Client* src;
+    Client* dst;
+} ReadWrite;
+
+Client* client_new(struct sockaddr_in addr, int sock);
+void client_destroy(Client*);
+
+void handle_tproxy_connection(Client*);
+void* handle_tproxy_connection_thread(void*);
+
+void read_write(Client* src, Client* dst);
+void* read_write_thread(void*);
 
 #endif // TPROXY_H

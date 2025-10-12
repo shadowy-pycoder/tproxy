@@ -19,6 +19,7 @@
 #include <limits.h>
 #include <netinet/in.h>
 #include <netinet/ip.h> /* superset of previous */
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +46,106 @@
 #define PORT            8888
 #define MAX_CONNECTIONS INT_MAX
 #define BUF_SIZE        (32 * 1024)
+
+Client* client_new(struct sockaddr_in addr, int sock)
+{
+    Client* c = (Client*)malloc(sizeof(Client));
+    c->sock = sock;
+    char* temp_ip = inet_ntoa(addr.sin_addr);
+    memset(c->addr.addr_str, 0, ADDR_SIZE);
+    memcpy(c->addr.addr_str, temp_ip, strlen(temp_ip));
+    int client_port = ntohs(addr.sin_port);
+    c->addr.port = client_port;
+    return c;
+}
+
+void client_destroy(Client* c)
+{
+    printf("Closing connection to %s:%d\n", c->addr.addr_str, c->addr.port);
+    if (close(c->sock) < 0) {
+        printf("Closing socket failed for %s:%d: %s\n", c->addr.addr_str, c->addr.port, strerror(errno));
+    } else {
+        printf("Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
+    }
+    free(c);
+}
+
+void* read_write_thread(void* arg)
+{
+    ReadWrite* args = (ReadWrite*)arg;
+    read_write(args->src, args->dst);
+    pthread_exit(NULL);
+    return NULL;
+}
+
+void read_write(Client* src, Client* dst)
+{
+    char buf[BUF_SIZE] = { 0 };
+    while (true) {
+        int nr = read(src->sock, buf, sizeof(buf));
+        if (nr < 0) {
+            printf("Reading message failed %s\n", strerror(errno));
+            break;
+        } else if (nr == 0) {
+            printf("EOF: %s:%d\n", src->addr.addr_str, src->addr.port);
+            break;
+        } else {
+            printf("Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
+        }
+        int nw = write(dst->sock, buf, nr);
+        if (nw < 0) {
+            printf("Writing message failed %s\n", strerror(errno));
+            break;
+        } else {
+            printf("Written %d bytes to destination %s:%d\n", nr, dst->addr.addr_str, dst->addr.port);
+        }
+    }
+}
+
+void* handle_tproxy_connection_thread(void* client)
+{
+    Client* c = (Client*)client;
+    handle_tproxy_connection(c);
+    pthread_exit(NULL);
+    return NULL;
+}
+
+void handle_tproxy_connection(Client* c)
+{
+    struct sockaddr_in dst_addr = { 0 };
+    dst_addr.sin_family = AF_INET;
+    socklen_t addr_len = sizeof(dst_addr);
+    Client* dst_client;
+    if (getsockname(c->sock, (struct sockaddr*)&dst_addr, &addr_len) == 0) {
+        int dst_sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (dst_sock < 0) {
+            printf("Creating socket failed: %s\n", strerror(errno));
+            client_destroy(c);
+            return;
+        }
+        dst_client = client_new(dst_addr, dst_sock);
+        printf("Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
+        if (connect(dst_client->sock, (struct sockaddr*)&dst_addr, addr_len) < 0) {
+            printf("Connection to destination failed %s\n", strerror(errno));
+            client_destroy(c);
+            client_destroy(dst_client);
+            return;
+        } else {
+            printf("Connected to destination %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
+        }
+    } else {
+        printf("Failed getting destination %s\n", strerror(errno));
+        client_destroy(c);
+        return;
+    }
+    pthread_t thread;
+    ReadWrite arg = { .src = c, .dst = dst_client };
+    pthread_create(&thread, NULL, read_write_thread, (void*)&arg);
+    read_write(dst_client, c);
+    pthread_join(thread, NULL);
+    client_destroy(c);
+    client_destroy(dst_client);
+}
 
 int create_tproxy_server(char* host, int port)
 {
@@ -105,114 +206,19 @@ int main(int argc, char** argv)
     }
     int server_sock = create_tproxy_server(ip, port);
     while (true) {
-        char buf[BUF_SIZE] = { 0 };
         struct sockaddr_in client_addr = { 0 };
         client_addr.sin_family = AF_INET;
         socklen_t addr_len = sizeof(client_addr);
+
         int client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_len);
         if (client_sock < 0) {
             printf("Accept connection failed: %s\n", strerror(errno));
         }
-        char* temp_ip = inet_ntoa(client_addr.sin_addr);
-        char client_ip[100] = { 0 };
-        memcpy(client_ip, temp_ip, strlen(temp_ip));
-        int client_port = ntohs(client_addr.sin_port);
-        printf("Accepted connection from %s:%d\n", client_ip, client_port);
-        struct sockaddr_in dst_addr = { 0 };
-        dst_addr.sin_family = AF_INET;
-        addr_len = sizeof(dst_addr);
-        char dst_ip[100] = { 0 };
-        int dst_port;
-        if (getsockname(client_sock, (struct sockaddr*)&dst_addr, &addr_len) == 0) {
-            temp_ip = inet_ntoa(dst_addr.sin_addr);
-            memcpy(dst_ip, temp_ip, strlen(temp_ip));
-            dst_port = ntohs(dst_addr.sin_port);
-            printf("Destination address is %s:%d\n", dst_ip, dst_port);
-        } else {
-            printf("Failed getting destination %s\n", strerror(errno));
-            if (close(client_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            continue;
-        }
-        int nr = read(client_sock, buf, sizeof(buf));
-        if (nr < 0) {
-            printf("Reading message failed %s\n", strerror(errno));
-            if (close(client_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            continue;
-        } else {
-            printf("Read %d bytes from client %s:%d\n", nr, client_ip, client_port);
-        }
-
-        int proxy_sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (proxy_sock < 0) {
-            printf("Creating socket failed: %s\n", strerror(errno));
-            if (close(client_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            continue;
-        }
-        if (connect(proxy_sock, (struct sockaddr*)&dst_addr, addr_len) < 0) {
-            printf("Connection to destination failed %s\n", strerror(errno));
-            if (close(client_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            if (close(proxy_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            continue;
-        } else {
-            printf("Connected to destination %s:%d\n", dst_ip, dst_port);
-        }
-        int nw = write(proxy_sock, buf, nr);
-        if (nw < 0) {
-            printf("Writing message failed %s\n", strerror(errno));
-            if (close(client_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            if (close(proxy_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            continue;
-        } else {
-            printf("Written %d bytes to destination %s:%d\n", nr, dst_ip, dst_port);
-        }
-        nr = read(proxy_sock, buf, sizeof(buf));
-        if (nr < 0) {
-            printf("Reading message failed %s\n", strerror(errno));
-            if (close(client_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            if (close(proxy_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            continue;
-        } else {
-            printf("Read %d bytes from destination %s:%d\n", nr, dst_ip, dst_port);
-        }
-
-        nw = write(client_sock, buf, nr);
-        if (nw < 0) {
-            printf("Writing message failed %s\n", strerror(errno));
-            if (close(client_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-            if (close(proxy_sock) < 0) {
-                printf("Closing socket failed: %s\n", strerror(errno));
-            }
-        } else {
-            printf("Written %d bytes to client %s:%d\n", nr, client_ip, client_port);
-        }
-
-        if (close(client_sock) < 0) {
-            printf("Closing socket failed: %s\n", strerror(errno));
-        }
-        if (close(proxy_sock) < 0) {
-            printf("Closing socket failed: %s\n", strerror(errno));
-        }
-        break;
+        Client* c = client_new(client_addr, client_sock);
+        printf("Accepted connection from %s:%d\n", c->addr.addr_str, c->addr.port);
+        pthread_t thread;
+        pthread_detach(thread);
+        pthread_create(&thread, NULL, handle_tproxy_connection_thread, c);
     }
     return 0;
 }
