@@ -16,4 +16,9 @@
 
 set -ex
 
-curl -v telnet://0.0.0.0:8888 <<<"Hello, World"
+GATEWAY=${1:?"Usage: ./setup_host.sh <Gateway IP>"}
+
+ip route show default >/tmp/default-route.txt
+
+ip route add 0.0.0.0/1 via "$GATEWAY"
+ip route add 128.0.0.0/1 via "$GATEWAY"

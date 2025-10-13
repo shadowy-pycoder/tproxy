@@ -22,10 +22,11 @@
  * This function either returns a valid file descriptor or exits with non-zero status code
  */
 #include <netinet/in.h>
+#include <semaphore.h>
 
 #define ADDR_SIZE 50
 
-int create_tproxy_server(char* host, int port);
+int create_tproxy_server(char *host, int port);
 
 void usage(void);
 
@@ -40,17 +41,18 @@ typedef struct {
 } Client;
 
 typedef struct {
-    Client* src;
-    Client* dst;
+    Client *src;
+    Client *dst;
+    sem_t *sem;
 } ReadWrite;
 
-Client* client_new(struct sockaddr_in addr, int sock);
-void client_destroy(Client*);
+Client *client_new(struct sockaddr_in addr, int sock);
+void client_destroy(Client *);
 
-void handle_tproxy_connection(Client*);
-void* handle_tproxy_connection_thread(void*);
+void handle_tproxy_connection(Client *);
+void *handle_tproxy_connection_thread(void *);
 
-void read_write(Client* src, Client* dst);
-void* read_write_thread(void*);
+void read_write(Client *src, Client *dst, sem_t *sem);
+void *read_write_thread(void *);
 
 #endif // TPROXY_H

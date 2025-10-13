@@ -20,7 +20,9 @@
 #include <netinet/in.h>
 #include <netinet/ip.h> /* superset of previous */
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,11 +49,11 @@
 #define MAX_CONNECTIONS INT_MAX
 #define BUF_SIZE        (32 * 1024)
 
-Client* client_new(struct sockaddr_in addr, int sock)
+Client *client_new(struct sockaddr_in addr, int sock)
 {
-    Client* c = (Client*)malloc(sizeof(Client));
+    Client *c = (Client *)malloc(sizeof(Client));
     c->sock = sock;
-    char* temp_ip = inet_ntoa(addr.sin_addr);
+    char *temp_ip = inet_ntoa(addr.sin_addr);
     memset(c->addr.addr_str, 0, ADDR_SIZE);
     memcpy(c->addr.addr_str, temp_ip, strlen(temp_ip));
     int client_port = ntohs(addr.sin_port);
@@ -59,7 +61,7 @@ Client* client_new(struct sockaddr_in addr, int sock)
     return c;
 }
 
-void client_destroy(Client* c)
+void client_destroy(Client *c)
 {
     printf("Closing connection to %s:%d\n", c->addr.addr_str, c->addr.port);
     if (close(c->sock) < 0) {
@@ -70,18 +72,25 @@ void client_destroy(Client* c)
     free(c);
 }
 
-void* read_write_thread(void* arg)
+void *read_write_thread(void *arg)
 {
-    ReadWrite* args = (ReadWrite*)arg;
-    read_write(args->src, args->dst);
+    ReadWrite *args = (ReadWrite *)arg;
+    read_write(args->src, args->dst, args->sem);
+    sem_trywait(args->sem);
     pthread_exit(NULL);
     return NULL;
 }
 
-void read_write(Client* src, Client* dst)
+void read_write(Client *src, Client *dst, sem_t *sem)
 {
-    char buf[BUF_SIZE] = { 0 };
+    char *buf = malloc(sizeof(char) * BUF_SIZE);
+    int value;
+    unsigned long long int written = 0;
     while (true) {
+        sem_getvalue(sem, &value);
+        if (value == 0) {
+            break;
+        }
         int nr = read(src->sock, buf, sizeof(buf));
         if (nr < 0) {
             printf("Reading message failed %s\n", strerror(errno));
@@ -90,33 +99,42 @@ void read_write(Client* src, Client* dst)
             printf("EOF: %s:%d\n", src->addr.addr_str, src->addr.port);
             break;
         } else {
-            printf("Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
+            // printf("Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
+        }
+        sem_getvalue(sem, &value);
+        if (value == 0) {
+            break;
         }
         int nw = write(dst->sock, buf, nr);
         if (nw < 0) {
             printf("Writing message failed %s\n", strerror(errno));
             break;
+        } else if (nw == 0) {
+            break;
         } else {
-            printf("Written %d bytes to destination %s:%d\n", nr, dst->addr.addr_str, dst->addr.port);
+            written += nw;
+            // printf("Written %d bytes to destination %s:%d\n", nr, dst->addr.addr_str, dst->addr.port);
         }
     }
+    printf("Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+    free(buf);
 }
 
-void* handle_tproxy_connection_thread(void* client)
+void *handle_tproxy_connection_thread(void *client)
 {
-    Client* c = (Client*)client;
+    Client *c = (Client *)client;
     handle_tproxy_connection(c);
     pthread_exit(NULL);
     return NULL;
 }
 
-void handle_tproxy_connection(Client* c)
+void handle_tproxy_connection(Client *c)
 {
     struct sockaddr_in dst_addr = { 0 };
     dst_addr.sin_family = AF_INET;
     socklen_t addr_len = sizeof(dst_addr);
-    Client* dst_client;
-    if (getsockname(c->sock, (struct sockaddr*)&dst_addr, &addr_len) == 0) {
+    Client *dst_client;
+    if (getsockname(c->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
         int dst_sock = socket(AF_INET, SOCK_STREAM, 0);
         if (dst_sock < 0) {
             printf("Creating socket failed: %s\n", strerror(errno));
@@ -125,7 +143,7 @@ void handle_tproxy_connection(Client* c)
         }
         dst_client = client_new(dst_addr, dst_sock);
         printf("Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
-        if (connect(dst_client->sock, (struct sockaddr*)&dst_addr, addr_len) < 0) {
+        if (connect(dst_client->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
             printf("Connection to destination failed %s\n", strerror(errno));
             client_destroy(c);
             client_destroy(dst_client);
@@ -138,16 +156,22 @@ void handle_tproxy_connection(Client* c)
         client_destroy(c);
         return;
     }
-    pthread_t thread;
-    ReadWrite arg = { .src = c, .dst = dst_client };
-    pthread_create(&thread, NULL, read_write_thread, (void*)&arg);
-    read_write(dst_client, c);
-    pthread_join(thread, NULL);
+    // TODO: do something to connections made directly to tproxy address
+    pthread_t thread1, thread2;
+    sem_t sem;
+    sem_init(&sem, 0, 1);
+    ReadWrite arg1 = { .src = c, .dst = dst_client, .sem = &sem };
+    ReadWrite arg2 = { .src = dst_client, .dst = c, .sem = &sem };
+    pthread_create(&thread1, NULL, read_write_thread, (void *)&arg1);
+    pthread_create(&thread2, NULL, read_write_thread, (void *)&arg2);
+    pthread_join(thread1, NULL);
+    pthread_join(thread2, NULL);
+    sem_destroy(&sem);
     client_destroy(c);
     client_destroy(dst_client);
 }
 
-int create_tproxy_server(char* host, int port)
+int create_tproxy_server(char *host, int port)
 {
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock < 0) {
@@ -155,11 +179,11 @@ int create_tproxy_server(char* host, int port)
         exit(EXIT_FAILURE);
     }
     int enable = 1;
-    if (setsockopt(server_sock, IPPROTO_IP, IP_TRANSPARENT, (const char*)&enable, sizeof(enable)) < 0) {
+    if (setsockopt(server_sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
         printf("Setting option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
-    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&enable, sizeof(enable)) < 0) {
+    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&enable, sizeof(enable)) < 0) {
         printf("Setting option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
@@ -170,7 +194,7 @@ int create_tproxy_server(char* host, int port)
     }
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
-    if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (bind(server_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         printf("Binding to address failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
@@ -188,9 +212,9 @@ void usage(void)
     exit(EXIT_FAILURE);
 }
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
-    char* ip;
+    char *ip;
     int port;
     if (argc == 3) {
         ip = argv[1];
@@ -210,15 +234,15 @@ int main(int argc, char** argv)
         client_addr.sin_family = AF_INET;
         socklen_t addr_len = sizeof(client_addr);
 
-        int client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &addr_len);
+        int client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len);
         if (client_sock < 0) {
             printf("Accept connection failed: %s\n", strerror(errno));
         }
-        Client* c = client_new(client_addr, client_sock);
+        Client *c = client_new(client_addr, client_sock);
         printf("Accepted connection from %s:%d\n", c->addr.addr_str, c->addr.port);
         pthread_t thread;
-        pthread_detach(thread);
         pthread_create(&thread, NULL, handle_tproxy_connection_thread, c);
+        pthread_detach(thread);
     }
     return 0;
 }
