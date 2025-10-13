@@ -117,7 +117,8 @@ void read_write(Client *src, Client *dst, sem_t *sem)
             // printf("Written %d bytes to destination %s:%d\n", nr, dst->addr.addr_str, dst->addr.port);
         }
     }
-    printf("Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+    if (written)
+        printf("Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
     free(buf);
 }
 

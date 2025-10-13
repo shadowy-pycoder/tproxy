@@ -18,6 +18,9 @@ set -ex
 
 GATEWAY=${1:?"Usage: ./setup_host.sh <Gateway IP>"}
 
+if [[ -f /tmp/default-route.txt ]]; then
+    rm -f /tmp/default-route.txt
+fi
 ip route show default >/tmp/default-route.txt
 
 ip route add 0.0.0.0/1 via "$GATEWAY"
