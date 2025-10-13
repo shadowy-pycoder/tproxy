@@ -21,6 +21,7 @@
 #include <netinet/ip.h> /* superset of previous */
 #include <pthread.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -229,6 +230,7 @@ int main(int argc, char **argv)
         port = PORT;
     }
     int server_sock = create_tproxy_server(ip, port);
+    signal(SIGPIPE, SIG_IGN);
     while (true) {
         struct sockaddr_in client_addr = { 0 };
         client_addr.sin_family = AF_INET;
