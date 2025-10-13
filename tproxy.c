@@ -119,6 +119,10 @@ void read_write(Client *src, Client *dst, sem_t *sem)
     }
     if (written)
         printf("Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+    if (shutdown(src->sock, SHUT_RDWR) < 0) {
+        if (errno != ENOTCONN)
+            printf("Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
+    }
     free(buf);
 }
 

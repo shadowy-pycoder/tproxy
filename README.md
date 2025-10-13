@@ -62,6 +62,12 @@ af -d -f -t "<DEVICE IP>"
 5. On your device try to open some website that uses TCP connections
 6. Confirm connection is successful and logs are present on your machine
 
+## Links
+
+- [Transparent proxy support in Linux Kernel](https://docs.kernel.org/networking/tproxy.html)
+- [Transparent proxy tutorial by Gost](https://latest.gost.run/en/tutorials/redirect/)
+- [Simple tproxy example](https://github.com/FarFetchd/simple_tproxy_example)
+
 ## License
 
 GPLv3
