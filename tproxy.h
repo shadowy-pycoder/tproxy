@@ -31,6 +31,7 @@ int create_tproxy_server(char *host, int port);
 void usage(void);
 
 typedef struct {
+    struct sockaddr_in raw;
     int port;
     char addr_str[ADDR_SIZE];
 } Address;
@@ -40,19 +41,10 @@ typedef struct {
     Address addr;
 } Client;
 
-typedef struct {
-    Client *src;
-    Client *dst;
-    sem_t *sem;
-} ReadWrite;
-
 Client *client_new(struct sockaddr_in addr, int sock);
 void client_destroy(Client *);
 
 void handle_tproxy_connection(Client *);
-void *handle_tproxy_connection_thread(void *);
-
 void read_write(Client *src, Client *dst, sem_t *sem);
-void *read_write_thread(void *);
 
 #endif // TPROXY_H
