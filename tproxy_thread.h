@@ -14,18 +14,31 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef TPROXY_H
-#define TPROXY_H
+#ifndef TPROXY_THREAD_H
+#define TPROXY_THREAD_H
 
-#define HOST            "0.0.0.0"
-#define PORT            8888
-#define MAX_CONNECTIONS 4092
-#define SERVER_WORKERS  10
+#include <netinet/in.h>
+#include <semaphore.h>
+#include <stdint.h>
 
-/* Create a TCP server listening on address specified by host and port parameters.
- *
- * This function either returns a valid file descriptor or exits with non-zero status code
- */
-int create_tproxy_server(char *host, int port);
-void usage(void);
-#endif // TPROXY_H
+#define ADDR_SIZE 50
+#define BUF_SIZE  (32 * 1024)
+
+typedef struct {
+    struct sockaddr_in raw;
+    int port;
+    char addr_str[ADDR_SIZE];
+} Address;
+
+typedef struct {
+    int sock;
+    Address addr;
+} Client;
+
+Client *thread_client_new(struct sockaddr_in addr, int sock);
+void thread_client_destroy(Client *);
+void handle_tproxy_connection(Client *);
+void read_write(Client *src, Client *dst, sem_t *sem);
+void *handle_server_thread(void *);
+
+#endif // TPROXY_THREAD_H

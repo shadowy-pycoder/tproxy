@@ -17,22 +17,21 @@
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
-#include <limits.h>
 #include <netinet/in.h>
-#include <netinet/ip.h> /* superset of previous */
+#include <netinet/ip.h>
 #include <pthread.h>
-#include <semaphore.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include "tproxy.h"
+#ifdef USE_THREADS
+#include "tproxy_thread.h"
+#else
+#include "tproxy_epoll.h"
+#endif
 
 /*
  * Setup iptables and forwarding by running a shell script directly from C code
@@ -47,193 +46,13 @@
  * On exit, try to restore iptables and other forwarding rules
  */
 
-#define HOST            "0.0.0.0"
-#define PORT            8888
-#define MAX_CONNECTIONS 4092
-#define BUF_SIZE        (32 * 1024)
-#define USE_THREADS     1
-#define SERVER_WORKERS  10
-
-#if USE_THREADS
-typedef struct {
-    Client *src;
-    Client *dst;
-    sem_t *sem;
-} ReadWrite;
-
-static void *handle_tproxy_connection_thread(void *);
-static void *read_write_thread(void *);
-static void *handle_server_thread(void *);
-
-void *read_write_thread(void *arg)
-{
-    ReadWrite *args = (ReadWrite *)arg;
-    read_write(args->src, args->dst, args->sem);
-    sem_trywait(args->sem);
-    pthread_exit(NULL);
-    return NULL;
-}
-
-void *handle_tproxy_connection_thread(void *client)
-{
-    Client *c = (Client *)client;
-    handle_tproxy_connection(c);
-    pthread_exit(NULL);
-    return NULL;
-}
-
-void *handle_server_thread(void *ssock)
-{
-    int server_sock = *(int *)ssock;
-    while (true) {
-        struct sockaddr_in client_addr = { 0 };
-        client_addr.sin_family = AF_INET;
-        socklen_t addr_len = sizeof(client_addr);
-
-        int client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len);
-        if (client_sock < 0) {
-            printf("Accept connection failed: %s\n", strerror(errno));
-        }
-        Client *c = client_new(client_addr, client_sock);
-        pid_t tid = gettid();
-        printf("[%d] Accepted connection from %s:%d\n", tid, c->addr.addr_str, c->addr.port);
-        pthread_t thread;
-        pthread_create(&thread, NULL, handle_tproxy_connection_thread, c);
-        pthread_detach(thread);
-    }
-    return NULL;
-}
-#endif // USE_THREADS
-
-Client *client_new(struct sockaddr_in addr, int sock)
-{
-    Client *c = (Client *)malloc(sizeof(Client));
-    c->sock = sock;
-    c->addr.raw = addr;
-    char *temp_ip = inet_ntoa(addr.sin_addr);
-    memset(c->addr.addr_str, 0, ADDR_SIZE);
-    memcpy(c->addr.addr_str, temp_ip, strlen(temp_ip));
-    int client_port = ntohs(addr.sin_port);
-    c->addr.port = client_port;
-    return c;
-}
-
-void client_destroy(Client *c)
-{
-    printf("Closing connection to %s:%d\n", c->addr.addr_str, c->addr.port);
-    if (close(c->sock) < 0) {
-        printf("Closing socket failed for %s:%d: %s\n", c->addr.addr_str, c->addr.port, strerror(errno));
-    } else {
-        printf("Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
-    }
-    free(c);
-}
-
-void read_write(Client *src, Client *dst, sem_t *sem)
-{
-    char *buf = malloc(sizeof(char) * BUF_SIZE);
-    int value;
-    unsigned long long int written = 0;
-    while (true) {
-        sem_getvalue(sem, &value);
-        if (value == 0) {
-            break;
-        }
-        int nr = read(src->sock, buf, sizeof(buf));
-        if (nr < 0) {
-            printf("Reading message failed %s\n", strerror(errno));
-            break;
-        } else if (nr == 0) {
-            printf("EOF: %s:%d\n", src->addr.addr_str, src->addr.port);
-            break;
-        } else {
-            // printf("Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
-        }
-        sem_getvalue(sem, &value);
-        if (value == 0) {
-            break;
-        }
-        int nw = write(dst->sock, buf, nr);
-        if (nw < 0) {
-            printf("Writing message failed %s\n", strerror(errno));
-            break;
-        } else if (nw == 0) {
-            break;
-        } else {
-            written += nw;
-            // printf("Written %d bytes to destination %s:%d\n", nr, dst->addr.addr_str, dst->addr.port);
-        }
-    }
-    if (written)
-        printf("Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
-    if (shutdown(src->sock, SHUT_RDWR) < 0) {
-        if (errno != ENOTCONN)
-            printf("Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
-    }
-    free(buf);
-}
-
-void handle_tproxy_connection(Client *c)
-{
-    struct sockaddr_in dst_addr = { 0 };
-    dst_addr.sin_family = AF_INET;
-    socklen_t addr_len = sizeof(dst_addr);
-    Client *dst_client;
-    if (getsockname(c->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
-        int dst_sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (dst_sock < 0) {
-            printf("Creating socket failed: %s\n", strerror(errno));
-            client_destroy(c);
-            return;
-        }
-        dst_client = client_new(dst_addr, dst_sock);
-        printf("Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
-        int enable = 1;
-        if (setsockopt(dst_client->sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
-            printf("Setting IP_TRANSPARENT option for destination failed: %s\n", strerror(errno));
-            client_destroy(c);
-            client_destroy(dst_client);
-            return;
-        }
-        if (bind(dst_client->sock, (struct sockaddr *)&c->addr.raw, sizeof(c->addr.raw)) < 0) {
-            printf("Binding to destination address failed: %s\n", strerror(errno));
-            client_destroy(c);
-            client_destroy(dst_client);
-            return;
-        }
-        if (connect(dst_client->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
-            printf("Connection to destination failed %s\n", strerror(errno));
-            client_destroy(c);
-            client_destroy(dst_client);
-            return;
-        } else {
-            printf("Connected to destination %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
-        }
-    } else {
-        printf("Failed getting destination %s\n", strerror(errno));
-        client_destroy(c);
-        return;
-    }
-    // TODO: do something to connections made directly to tproxy address
-    sem_t sem;
-    sem_init(&sem, 0, 1);
-#if USE_THREADS
-    pthread_t thread1, thread2;
-    ReadWrite arg1 = { .src = c, .dst = dst_client, .sem = &sem };
-    ReadWrite arg2 = { .src = dst_client, .dst = c, .sem = &sem };
-    pthread_create(&thread1, NULL, read_write_thread, (void *)&arg1);
-    pthread_create(&thread2, NULL, read_write_thread, (void *)&arg2);
-    pthread_join(thread1, NULL);
-    pthread_join(thread2, NULL);
-#endif // USE_THREADS
-    sem_destroy(&sem);
-    client_destroy(c);
-    client_destroy(dst_client);
-}
-
 int create_tproxy_server(char *host, int port)
 {
+#ifdef USE_THREADS
     int server_sock = socket(AF_INET, SOCK_STREAM, 0);
+#else
+    int server_sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+#endif
     if (server_sock < 0) {
         printf("Creating socket failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
@@ -293,17 +112,24 @@ int main(int argc, char **argv)
         port = PORT;
     }
     signal(SIGPIPE, SIG_IGN);
-#if USE_THREADS
     pthread_t threads[SERVER_WORKERS];
+#ifdef USE_THREADS
+    printf("Starting %d threading servers\n", SERVER_WORKERS);
+#else
+    printf("Starting %d epoll servers\n", SERVER_WORKERS);
+#endif
     for (int i = 0; i < SERVER_WORKERS; i++) {
         int server_sock = create_tproxy_server(ip, port);
         pthread_t thread;
+#ifdef USE_THREADS
         pthread_create(&thread, NULL, handle_server_thread, &server_sock);
+#else
+        pthread_create(&thread, NULL, handle_server_epoll, &server_sock);
+#endif // USE_THREADS
         threads[i] = thread;
     }
     for (int i = 0; i < SERVER_WORKERS; i++) {
         pthread_join(threads[i], NULL);
     }
-#endif // USE_THREADS
     return 0;
 }

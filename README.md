@@ -10,6 +10,12 @@ make
 
 This command will create `tproxy` binary in the current working directory.
 
+To compile threading server:
+
+```
+make CPPFLAGS='-DUSE_THREADS'
+```
+
 ## Usage
 
 ```shell
