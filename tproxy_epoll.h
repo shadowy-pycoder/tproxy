@@ -52,7 +52,7 @@ typedef struct {
 typedef struct {
     Client *src;
     Client *dst;
-} Connection;
+} Tunnel;
 
 typedef enum {
     SRC_SOCKET,
@@ -60,21 +60,21 @@ typedef enum {
 } SocketSide;
 
 typedef struct {
-    Connection *conn;
+    Tunnel *tun;
     SocketSide side;
-} Tunnel;
+} Connection;
 
 Client *client_new(struct sockaddr_in addr, int sock);
 void client_destroy(Client *);
-Connection *connection_new(Client *src, Client *dst);
-void connection_destroy(Connection *);
-Tunnel *tunnel_new(Connection *conn, SocketSide side);
+Tunnel *tunnel_new(Client *src, Client *dst);
 void tunnel_destroy(Tunnel *);
+Connection *connection_new(Tunnel *tun, SocketSide side);
+void connection_destroy(Connection *);
 bool setup_tproxy_connection(int epfd, Client *c);
 int setnonblocking(int fd);
-int epoll_add(int epfd, Tunnel *tun, uint32_t events);
-int epoll_mod(int epfd, Tunnel *tun, uint32_t events);
-int epoll_del(int epfd, Tunnel *tun);
-void handle_client_events(int epfd, Tunnel *tun, uint32_t events);
+int epoll_add(int epfd, Connection *conn, uint32_t events);
+int epoll_mod(int epfd, Connection *conn, uint32_t events);
+int epoll_del(int epfd, Connection *conn);
+void handle_client_events(int epfd, Connection *conn, uint32_t events);
 void *handle_server_epoll(void *ssock);
 #endif // TPROXY_EPOLL_H
