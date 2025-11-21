@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include "tproxy.h"
 #ifdef USE_THREADS
@@ -54,38 +55,38 @@ int create_tproxy_server(char *host, int port)
     int server_sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
 #endif
     if (server_sock < 0) {
-        printf("Creating socket failed: %s\n", strerror(errno));
+        printf("ERROR: Creating socket failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     int enable = 1;
     if (setsockopt(server_sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
-        printf("Setting option failed: %s\n", strerror(errno));
+        printf("ERROR: Setting option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&enable, sizeof(enable)) < 0) {
-        printf("Setting option failed: %s\n", strerror(errno));
+        printf("ERROR: Setting option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEPORT, (const char *)&enable, sizeof(enable)) < 0) {
-        printf("Setting option failed: %s\n", strerror(errno));
+        printf("ERROR: Setting option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     struct sockaddr_in server_addr = { 0 };
     if (inet_pton(AF_INET, host, &server_addr.sin_addr) < 0) {
-        printf("%s is not valid IP address\n", host);
+        printf("ERROR: %s is not valid IP address\n", host);
         exit(EXIT_FAILURE);
     }
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(port);
     if (bind(server_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        printf("Binding to address failed: %s\n", strerror(errno));
+        printf("ERROR: Binding to address failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     if (listen(server_sock, MAX_CONNECTIONS) < 0) {
-        printf("Listening on address failed: %s\n", strerror(errno));
+        printf("ERROR: Listening on address failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
-    printf("tproxy listening on %s:%d\n", host, port);
+    printf("INFO: tproxy listening on %s:%d\n", host, port);
     return server_sock;
 }
 
@@ -112,11 +113,10 @@ int main(int argc, char **argv)
         port = PORT;
     }
     signal(SIGPIPE, SIG_IGN);
-    pthread_t threads[SERVER_WORKERS];
 #ifdef USE_THREADS
-    printf("Starting %d threading servers\n", SERVER_WORKERS);
+    printf("INFO: Starting %d threading servers\n", SERVER_WORKERS);
 #else
-    printf("Starting %d epoll servers\n", SERVER_WORKERS);
+    printf("INFO: Starting %d epoll servers\n", SERVER_WORKERS);
 #endif
     for (int i = 0; i < SERVER_WORKERS; i++) {
         int server_sock = create_tproxy_server(ip, port);
@@ -126,10 +126,8 @@ int main(int argc, char **argv)
 #else
         pthread_create(&thread, NULL, handle_server_epoll, &server_sock);
 #endif // USE_THREADS
-        threads[i] = thread;
+        pthread_detach(thread);
     }
-    for (int i = 0; i < SERVER_WORKERS; i++) {
-        pthread_join(threads[i], NULL);
-    }
+    pause();
     return 0;
 }

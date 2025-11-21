@@ -64,12 +64,12 @@ void *handle_server_thread(void *ssock)
 
         int client_sock = accept(server_sock, (struct sockaddr *)&client_addr, &addr_len);
         if (client_sock < 0) {
-            printf("Accept connection failed: %s\n", strerror(errno));
+            printf("ERROR: Accept connection failed: %s\n", strerror(errno));
             continue;
         }
         Client *c = thread_client_new(client_addr, client_sock);
         pid_t tid = gettid();
-        printf("[%d] Accepted connection from %s:%d\n", tid, c->addr.addr_str, c->addr.port);
+        printf("INFO: [%d] Accepted connection from %s:%d\n", tid, c->addr.addr_str, c->addr.port);
         pthread_t thread;
         pthread_create(&thread, NULL, handle_tproxy_connection_thread, c);
         pthread_detach(thread);
@@ -86,35 +86,35 @@ void handle_tproxy_connection(Client *c)
     if (getsockname(c->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
         int dst_sock = socket(AF_INET, SOCK_STREAM, 0);
         if (dst_sock < 0) {
-            printf("Creating socket failed: %s\n", strerror(errno));
+            printf("ERROR: Creating socket failed: %s\n", strerror(errno));
             thread_client_destroy(c);
             return;
         }
         dst_client = thread_client_new(dst_addr, dst_sock);
-        printf("Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
+        printf("INFO: Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
         int enable = 1;
         if (setsockopt(dst_client->sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
-            printf("Setting IP_TRANSPARENT option for destination failed: %s\n", strerror(errno));
+            printf("ERROR: Setting IP_TRANSPARENT option for destination failed: %s\n", strerror(errno));
             thread_client_destroy(c);
             thread_client_destroy(dst_client);
             return;
         }
         if (bind(dst_client->sock, (struct sockaddr *)&c->addr.raw, sizeof(c->addr.raw)) < 0) {
-            printf("Binding to destination address failed: %s\n", strerror(errno));
+            printf("ERROR: Binding to destination address failed: %s\n", strerror(errno));
             thread_client_destroy(c);
             thread_client_destroy(dst_client);
             return;
         }
         if (connect(dst_client->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
-            printf("Connection to destination failed %s\n", strerror(errno));
+            printf("ERROR: Connection to destination failed %s\n", strerror(errno));
             thread_client_destroy(c);
             thread_client_destroy(dst_client);
             return;
         } else {
-            printf("Connected to destination %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
+            printf("INFO: Connected to destination %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
         }
     } else {
-        printf("Failed getting destination %s\n", strerror(errno));
+        printf("ERROR: Failed getting destination %s\n", strerror(errno));
         thread_client_destroy(c);
         return;
     }
@@ -144,34 +144,39 @@ void read_write(Client *src, Client *dst, sem_t *sem)
 
         int nr = read(src->sock, buf, sizeof(buf));
         if (nr < 0) {
-            printf("Reading message failed %s\n", strerror(errno));
+            printf("ERROR: Reading message failed %s\n", strerror(errno));
             break;
         } else if (nr == 0) {
-            printf("EOF: %s:%d\n", src->addr.addr_str, src->addr.port);
+            printf("INFO: %s:%d:EOF\n", src->addr.addr_str, src->addr.port);
             break;
         } else {
-            // printf("Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
+#ifdef DEBUG
+            printf("DEBUG: Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
+#endif
         }
         sem_getvalue(sem, &value);
         if (value == 0) break;
 
         int nw = write(dst->sock, buf, nr);
         if (nw < 0) {
-            printf("Writing message failed %s\n", strerror(errno));
+            printf("ERROR: Writing message failed %s\n", strerror(errno));
             break;
         } else if (nw == 0) {
             break;
         } else {
             written += nw;
-            // printf("Written %d bytes to destination %s:%d\n", nr, dst->addr.addr_str, dst->addr.port);
+#ifdef DEBUG
+            printf("DEBUG: Written %d bytes to destination %s:%d\n", nw, dst->addr.addr_str, dst->addr.port);
+#endif
         }
     }
     if (written)
-        printf("Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+        printf("INFO: Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
     if (shutdown(src->sock, SHUT_RDWR) < 0) {
         if (errno != ENOTCONN)
-            printf("Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
+            printf("ERROR: Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
     }
+    free(buf);
 }
 
 Client *thread_client_new(struct sockaddr_in addr, int sock)
@@ -192,11 +197,11 @@ void thread_client_destroy(Client *c)
 {
     if (c == NULL)
         return;
-    printf("Closing connection to %s:%d\n", c->addr.addr_str, c->addr.port);
+    printf("INFO: Closing connection to %s:%d\n", c->addr.addr_str, c->addr.port);
     if (close(c->sock) < 0) {
-        printf("Closing socket failed for %s:%d: %s\n", c->addr.addr_str, c->addr.port, strerror(errno));
+        printf("ERROR: Closing socket failed for %s:%d: %s\n", c->addr.addr_str, c->addr.port, strerror(errno));
     } else {
-        printf("Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
+        printf("INFO: Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
     }
     free(c);
 }

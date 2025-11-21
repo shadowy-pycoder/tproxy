@@ -45,7 +45,7 @@ void *handle_server_epoll(void *ssock)
     int server_sock = *(int *)ssock;
     int epfd = epoll_create1(0);
     if (epfd < 0) {
-        printf("Creating epoll file descriptor failed %s\n", strerror(errno));
+        printf("ERROR: Creating epoll file descriptor failed %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -55,7 +55,7 @@ void *handle_server_epoll(void *ssock)
     Tunnel *tun = tunnel_new(c, NULL);
     Connection *conn = connection_new(tun, SRC_SOCKET);
     if (epoll_add(epfd, conn, EPOLLIN | EPOLLET) < 0) {
-        printf("Adding to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: Adding to epoll failed: %s\n", strerror(errno));
         connection_destroy(conn);
         tunnel_destroy(tun);
         exit(EXIT_FAILURE);
@@ -65,7 +65,7 @@ void *handle_server_epoll(void *ssock)
     while (true) {
         nready = epoll_wait(epfd, events, MAX_EVENTS, -1);
         if (nready < 0) {
-            printf("Waiting for epoll failed: %s\n", strerror(errno));
+            printf("ERROR: Waiting for epoll failed: %s\n", strerror(errno));
             connection_destroy(conn);
             tunnel_destroy(tun);
             exit(EXIT_FAILURE);
@@ -82,13 +82,13 @@ void *handle_server_epoll(void *ssock)
                 fd = conn->tun->dst->sock;
                 break;
             default:
-                printf("Unknown socket side %d\n", conn->side);
+                printf("ERROR: Unknown socket side %d\n", conn->side);
                 exit(EXIT_FAILURE);
             }
 
             if (fd == server_sock) {
                 if (!(events[i].events & EPOLLIN)) {
-                    printf("Server is not ready to accept connections %d\n", events[i].events);
+                    printf("INFO: Server is not ready to accept connections %d\n", events[i].events);
                     continue;
                 }
                 while (true) {
@@ -100,11 +100,11 @@ void *handle_server_epoll(void *ssock)
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             break;
                         }
-                        printf("Accept connection failed: %s\n", strerror(errno));
+                        printf("ERROR: Accept connection failed: %s\n", strerror(errno));
                         break;
                     }
                     if (setnonblocking(client_sock) < 0) {
-                        printf("Set nonblockong failed: %s\n", strerror(errno));
+                        printf("ERROR: Set nonblockong failed: %s\n", strerror(errno));
                         close(client_sock);
                         break;
                     }
@@ -113,7 +113,7 @@ void *handle_server_epoll(void *ssock)
                         break;
                     }
                     pid_t tid = gettid();
-                    printf("[%d] Accepted connection from %s:%d\n", tid, c->addr.addr_str, c->addr.port);
+                    printf("INFO: [%d] Accepted connection from %s:%d\n", tid, c->addr.addr_str, c->addr.port);
                 }
             } else {
                 handle_client_events(epfd, conn, events[i].events);
@@ -134,7 +134,7 @@ int epoll_add(int epfd, Connection *conn, uint32_t events)
     case DST_SOCKET:
         return epoll_ctl(epfd, EPOLL_CTL_ADD, conn->tun->dst->sock, &ev);
     default:
-        printf("Unknown socket side %d\n", conn->side);
+        printf("ERROR: Unknown socket side %d\n", conn->side);
         return -1;
     }
 }
@@ -150,7 +150,7 @@ int epoll_mod(int epfd, Connection *conn, uint32_t events)
     case DST_SOCKET:
         return epoll_ctl(epfd, EPOLL_CTL_MOD, conn->tun->dst->sock, &ev);
     default:
-        printf("Unknown socket side %d\n", conn->side);
+        printf("ERROR: Unknown socket side %d\n", conn->side);
         return -1;
     }
 }
@@ -159,11 +159,13 @@ int epoll_del(int epfd, Connection *conn)
 {
     switch (conn->side) {
     case SRC_SOCKET:
+        printf("Deleting %s:%d\n", conn->tun->src->addr.addr_str, conn->tun->src->addr.port);
         return epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->src->sock, NULL);
     case DST_SOCKET:
+        printf("Deleting %s:%d\n", conn->tun->dst->addr.addr_str, conn->tun->dst->addr.port);
         return epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->dst->sock, NULL);
     default:
-        printf("Unknown socket side %d\n", conn->side);
+        printf("ERROR: Unknown socket side %d\n", conn->side);
         return -1;
     }
 }
@@ -179,27 +181,27 @@ bool setup_tproxy_connection(int epfd, Client *c)
     if (getsockname(c->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
         int dst_sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
         if (dst_sock < 0) {
-            printf("Creating socket failed: %s\n", strerror(errno));
+            printf("ERROR: Creating socket failed: %s\n", strerror(errno));
             client_destroy(c);
             return false;
         }
         dst_client = client_new(dst_addr, dst_sock);
-        printf("Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
+        printf("INFO: Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
         tun = tunnel_new(c, dst_client);
         int enable = 1;
         if (setsockopt(dst_client->sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
-            printf("Setting IP_TRANSPARENT option for destination failed: %s\n", strerror(errno));
+            printf("ERROR: Setting IP_TRANSPARENT option for destination failed: %s\n", strerror(errno));
             tunnel_destroy(tun);
             return false;
         }
         if (bind(dst_client->sock, (struct sockaddr *)&c->addr.raw, sizeof(c->addr.raw)) < 0) {
-            printf("Binding to destination address failed: %s\n", strerror(errno));
+            printf("ERROR: Binding to destination address failed: %s\n", strerror(errno));
             tunnel_destroy(tun);
             return false;
         }
         if (connect(dst_client->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
             if (errno != EINPROGRESS) {
-                printf("Connection to destination failed %s\n", strerror(errno));
+                printf("ERROR: Connection to destination failed %s\n", strerror(errno));
                 tunnel_destroy(tun);
                 return false;
             } else {
@@ -210,16 +212,16 @@ bool setup_tproxy_connection(int epfd, Client *c)
         }
         Connection *conn1 = connection_new(tun, SRC_SOCKET);
         if (epoll_add(epfd, conn1, EPOLLIN | EPOLLOUT | EPOLLET) < 0) {
-            printf("Adding to epoll failed: %s\n", strerror(errno));
+            printf("ERROR: Adding to epoll failed: %s\n", strerror(errno));
             connection_destroy(conn1);
             tunnel_destroy(tun);
             return false;
         }
         Connection *conn2 = connection_new(tun, DST_SOCKET);
         if (epoll_add(epfd, conn2, EPOLLIN | EPOLLOUT | EPOLLET) < 0) {
-            printf("Adding to epoll failed: %s\n", strerror(errno));
+            printf("ERROR: Adding to epoll failed: %s\n", strerror(errno));
             if (epoll_del(epfd, conn2) < 0) {
-                printf("Removing from epoll failed: %s\n", strerror(errno));
+                printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
             }
             connection_destroy(conn1);
             connection_destroy(conn2);
@@ -227,52 +229,172 @@ bool setup_tproxy_connection(int epfd, Client *c)
             return false;
         }
     } else {
-        printf("Failed getting destination %s\n", strerror(errno));
+        printf("ERROR: Failed getting destination %s\n", strerror(errno));
         client_destroy(c);
         return false;
     }
     return true;
 }
 
+bool handle_write(Client *src, Client *dst)
+{
+    unsigned long long int written = 0;
+    while (true) {
+        int nw = write(dst->sock, src->buf->data + src->buf->offset, src->buf->size - src->buf->offset);
+        if (nw < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) break;
+            if (errno == EINTR) continue;
+            printf("ERROR: Writing message failed %s\n", strerror(errno));
+            if (written)
+                printf("INFO: Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+            return false;
+        } else if (nw == 0) {
+            break;
+        } else {
+            written += nw;
+            src->buf->offset += nw;
+#ifdef DEBUG
+            printf("DEBUG: Written %d bytes to destination %s:%d\n", nw, dst->addr.addr_str, dst->addr.port);
+#endif
+            if (src->buf->offset >= src->buf->size) {
+                src->buf->offset = 0;
+                src->buf->size = 0;
+                break;
+            }
+        }
+    }
+    if (written)
+        printf("INFO: Written %llu bytes %s:%d -> %s:%d\n", written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+    return true;
+}
+
+bool handle_read(Client *src)
+{
+    int buf_size = sizeof(src->buf->data);
+    while (true) {
+        int nr = read(src->sock, src->buf->data + src->buf->size, buf_size - src->buf->size);
+        if (nr < 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) break;
+            if (errno == EINTR) continue;
+            printf("ERROR: Reading message failed %s\n", strerror(errno));
+            return false;
+        } else if (nr == 0) {
+            printf("INFO: %s:%d:EOF\n", src->addr.addr_str, src->addr.port);
+            return false;
+        } else {
+            src->buf->size += nr;
+#ifdef DEBUG
+            printf("DEBUG: Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
+#endif
+            if (src->buf->size >= buf_size) {
+                break;
+            }
+        }
+    }
+    return true;
+}
+
+void connection_cleanup(int epfd, Connection *conn, Client *src, Client *dst, Tunnel *tun)
+{
+    if (epoll_del(epfd, conn) < 0) {
+        printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
+    }
+    src->closed = true;
+#ifdef DEBUG
+    printf("DEBUG: State src.closed=%d dst.closed=%d\n", src->closed, dst->closed);
+#endif
+    connection_destroy(conn);
+    if (dst->closed && src->closed) tunnel_destroy(tun);
+}
+
 void handle_client_events(int epfd, Connection *conn, uint32_t events)
 {
-    (void)epfd;
-    Client *sc, *dc;
-    (void)dc;
+    Client *src, *dst;
     switch (conn->side) {
     case SRC_SOCKET:
-        sc = conn->tun->src;
-        dc = conn->tun->dst;
+        src = conn->tun->src;
+        dst = conn->tun->dst;
         break;
     case DST_SOCKET:
-        sc = conn->tun->dst;
-        dc = conn->tun->src;
+        src = conn->tun->dst;
+        dst = conn->tun->src;
         break;
     default:
-        printf("Unknown socket side %d\n", conn->side);
+        printf("ERROR: Unknown socket side %d\n", conn->side);
         exit(EXIT_FAILURE);
     }
-    if (events & EPOLLOUT) {
-        // handle connection logic
-        if (!(sc->connected)) {
-            int err;
-            socklen_t len = sizeof(err);
-            if (getsockopt(sc->sock, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
-                printf("connect failed: %s\n", strerror(err));
-                // TODO: delete conn from events
-                // TODO: close conn here
+    Tunnel *tun = conn->tun;
+#ifdef DEBUG
+    printf("DEBUG: State src.closed=%d dst.closed=%d\n", src->closed, dst->closed);
+#endif
+    if (events & EPOLLIN) {
+#ifdef DEBUG
+        printf("DEBUG: Reading data from %s:%d\n", src->addr.addr_str, src->addr.port);
+#endif
+        if (!(handle_read(src))) {
+#ifdef DEBUG
+            printf("DEBUG: Reading data from %s:%d failed\n", src->addr.addr_str, src->addr.port);
+#endif
+            if (shutdown(dst->sock, SHUT_WR) < 0) {
+                printf("ERROR: Shutting down failed");
+            }
+            connection_cleanup(epfd, conn, src, dst, tun);
+            return;
+        }
+        if (dst->connected) {
+#ifdef DEBUG
+            printf("DEBUG: Writing data from %s:%d to %s:%d\n", src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+#endif
+            if (!(handle_write(src, dst))) {
+#ifdef DEBUG
+                printf("DEBUG: Writing data from %s:%d to %s:%d failed\n", src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+#endif
+                connection_cleanup(epfd, conn, src, dst, tun);
                 return;
             }
-            sc->connected = true;
         }
-        // check for wbuff of other side
-        // if any data, write until EWOULDBLOCK | EAGAIN
-        // write any pending data to the sc
-        // if other side is closed already, close tunnel
-    } else if (events & EPOLLIN) {
-        // close tunnel if other side is closed
-        // read data into buffer
+    } else if (events & EPOLLOUT) {
+        if (dst->closed) {
+#ifdef DEBUG
+            printf("DEBUG: Destination %s:%d closed, closing connection to %s:%d\n", dst->addr.addr_str, dst->addr.port, src->addr.addr_str, src->addr.port);
+#endif
+            connection_cleanup(epfd, conn, src, dst, tun);
+            return;
+        }
+        if (!(src->connected)) {
+#ifdef DEBUG
+            printf("DEBUG: Connecting %s:%d\n", src->addr.addr_str, src->addr.port);
+#endif
+            int err;
+            socklen_t len = sizeof(err);
+            if (getsockopt(src->sock, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
+                printf("ERROR: Connect failed: %s\n", strerror(err));
+                connection_cleanup(epfd, conn, src, dst, tun);
+                return;
+            }
+            src->connected = true;
+#ifdef DEBUG
+            printf("DEBUG: Connected %s:%d\n", src->addr.addr_str, src->addr.port);
+#endif
+        }
+#ifdef DEBUG
+        printf("DEBUG: Writing data from %s:%d to %s:%d\n", dst->addr.addr_str, dst->addr.port, src->addr.addr_str, src->addr.port);
+#endif
+        if (!(handle_write(dst, src))) {
+#ifdef DEBUG
+            printf("DEBUG: Writing data from %s:%d to %s:%d failed\n", dst->addr.addr_str, dst->addr.port, src->addr.addr_str, src->addr.port);
+#endif
+            connection_cleanup(epfd, conn, src, dst, tun);
+            return;
+        }
     } else if ((events & EPOLLHUP) || (events & EPOLLRDHUP) || (events & EPOLLERR)) {
+        // TODO: proper dispatch
+        if (epoll_del(epfd, conn) < 0) {
+            printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
+        }
+        src->closed = true;
+        connection_destroy(conn);
+        if (dst->closed && src->closed) tunnel_destroy(tun);
     }
     return;
 }
@@ -290,12 +412,9 @@ Client *client_new(struct sockaddr_in addr, int sock)
     memcpy(c->addr.addr_str, temp_ip, strlen(temp_ip));
     int client_port = ntohs(addr.sin_port);
     c->addr.port = client_port;
-    c->rbuf = (Buffer *)malloc(sizeof(Buffer));
-    if (c->rbuf == NULL) exit(EXIT_FAILURE);
-    memset(c->rbuf, 0, sizeof(Buffer));
-    c->wbuf = (Buffer *)malloc(sizeof(Buffer));
-    if (c->wbuf == NULL) exit(EXIT_FAILURE);
-    memset(c->wbuf, 0, sizeof(Buffer));
+    c->buf = (Buffer *)malloc(sizeof(Buffer));
+    if (c->buf == NULL) exit(EXIT_FAILURE);
+    memset(c->buf, 0, sizeof(Buffer));
     return c;
 }
 
@@ -303,14 +422,13 @@ void client_destroy(Client *c)
 {
     if (c == NULL)
         return;
-    printf("Closing connection to %s:%d\n", c->addr.addr_str, c->addr.port);
+    printf("INFO: Closing connection to %s:%d\n", c->addr.addr_str, c->addr.port);
     if (close(c->sock) < 0) {
-        printf("Closing socket failed for %s:%d: %s\n", c->addr.addr_str, c->addr.port, strerror(errno));
+        printf("ERROR: Closing socket failed for %s:%d: %s\n", c->addr.addr_str, c->addr.port, strerror(errno));
     } else {
-        printf("Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
+        printf("INFO: Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
     }
-    free(c->rbuf);
-    free(c->wbuf);
+    free(c->buf);
     free(c);
 }
 

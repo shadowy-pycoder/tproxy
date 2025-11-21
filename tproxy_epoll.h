@@ -45,8 +45,7 @@ typedef struct {
     bool connected;
     bool closed;
     Address addr;
-    Buffer *rbuf;
-    Buffer *wbuf;
+    Buffer *buf;
 } Client;
 
 typedef struct {
@@ -77,4 +76,7 @@ int epoll_mod(int epfd, Connection *conn, uint32_t events);
 int epoll_del(int epfd, Connection *conn);
 void handle_client_events(int epfd, Connection *conn, uint32_t events);
 void *handle_server_epoll(void *ssock);
+bool handle_write(Client *src, Client *dst);
+bool handle_read(Client *src);
+void connection_cleanup(int epfd, Connection *conn, Client *src, Client *dst, Tunnel *tun);
 #endif // TPROXY_EPOLL_H
