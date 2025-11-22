@@ -1,4 +1,4 @@
-# Simple Transparent proxy in C
+# Simple Transparent proxy in C (threads/epoll)
 
 ## Installation
 
@@ -14,6 +14,12 @@ To compile threading server:
 
 ```
 make CPPFLAGS='-DUSE_THREADS'
+```
+
+To compile with debug information:
+
+```
+make CPPFLAGS='-DDEBUG' -B
 ```
 
 ## Usage

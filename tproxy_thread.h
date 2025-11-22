@@ -37,7 +37,7 @@ typedef struct {
 
 Client *thread_client_new(struct sockaddr_in addr, int sock);
 void thread_client_destroy(Client *);
-void handle_tproxy_connection(Client *);
+void handle_tproxy_connection(Client *src);
 void read_write(Client *src, Client *dst, sem_t *sem);
 void *handle_server_thread(void *);
 

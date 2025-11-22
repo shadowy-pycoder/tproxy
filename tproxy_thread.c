@@ -67,70 +67,70 @@ void *handle_server_thread(void *ssock)
             printf("ERROR: Accept connection failed: %s\n", strerror(errno));
             continue;
         }
-        Client *c = thread_client_new(client_addr, client_sock);
+        Client *src = thread_client_new(client_addr, client_sock);
         pid_t tid = gettid();
-        printf("INFO: [%d] Accepted connection from %s:%d\n", tid, c->addr.addr_str, c->addr.port);
+        printf("INFO: [%d] Accepted connection from %s:%d\n", tid, src->addr.addr_str, src->addr.port);
         pthread_t thread;
-        pthread_create(&thread, NULL, handle_tproxy_connection_thread, c);
+        pthread_create(&thread, NULL, handle_tproxy_connection_thread, src);
         pthread_detach(thread);
     }
     return NULL;
 }
 
-void handle_tproxy_connection(Client *c)
+void handle_tproxy_connection(Client *src)
 {
     struct sockaddr_in dst_addr = { 0 };
     dst_addr.sin_family = AF_INET;
     socklen_t addr_len = sizeof(dst_addr);
-    Client *dst_client;
-    if (getsockname(c->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
+    Client *dst;
+    if (getsockname(src->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
         int dst_sock = socket(AF_INET, SOCK_STREAM, 0);
         if (dst_sock < 0) {
             printf("ERROR: Creating socket failed: %s\n", strerror(errno));
-            thread_client_destroy(c);
+            thread_client_destroy(src);
             return;
         }
-        dst_client = thread_client_new(dst_addr, dst_sock);
-        printf("INFO: Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
+        dst = thread_client_new(dst_addr, dst_sock);
+        printf("INFO: Destination address is %s:%d\n", dst->addr.addr_str, dst->addr.port);
         int enable = 1;
-        if (setsockopt(dst_client->sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
+        if (setsockopt(dst->sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
             printf("ERROR: Setting IP_TRANSPARENT option for destination failed: %s\n", strerror(errno));
-            thread_client_destroy(c);
-            thread_client_destroy(dst_client);
+            thread_client_destroy(src);
+            thread_client_destroy(dst);
             return;
         }
-        if (bind(dst_client->sock, (struct sockaddr *)&c->addr.raw, sizeof(c->addr.raw)) < 0) {
+        if (bind(dst->sock, (struct sockaddr *)&src->addr.raw, sizeof(src->addr.raw)) < 0) {
             printf("ERROR: Binding to destination address failed: %s\n", strerror(errno));
-            thread_client_destroy(c);
-            thread_client_destroy(dst_client);
+            thread_client_destroy(src);
+            thread_client_destroy(dst);
             return;
         }
-        if (connect(dst_client->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
+        if (connect(dst->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
             printf("ERROR: Connection to destination failed %s\n", strerror(errno));
-            thread_client_destroy(c);
-            thread_client_destroy(dst_client);
+            thread_client_destroy(src);
+            thread_client_destroy(dst);
             return;
         } else {
-            printf("INFO: Connected to destination %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
+            printf("INFO: Connected to destination %s:%d\n", dst->addr.addr_str, dst->addr.port);
         }
     } else {
         printf("ERROR: Failed getting destination %s\n", strerror(errno));
-        thread_client_destroy(c);
+        thread_client_destroy(src);
         return;
     }
     // TODO: do something to connections made directly to tproxy address
     sem_t sem;
     sem_init(&sem, 0, 1);
     pthread_t thread1, thread2;
-    ReadWrite arg1 = { .src = c, .dst = dst_client, .sem = &sem };
-    ReadWrite arg2 = { .src = dst_client, .dst = c, .sem = &sem };
+    ReadWrite arg1 = { .src = src, .dst = dst, .sem = &sem };
+    ReadWrite arg2 = { .src = dst, .dst = src, .sem = &sem };
     pthread_create(&thread1, NULL, read_write_thread, (void *)&arg1);
     pthread_create(&thread2, NULL, read_write_thread, (void *)&arg2);
     pthread_join(thread1, NULL);
     pthread_join(thread2, NULL);
     sem_destroy(&sem);
-    thread_client_destroy(c);
-    thread_client_destroy(dst_client);
+    thread_client_destroy(src);
+    thread_client_destroy(dst);
 }
 
 void read_write(Client *src, Client *dst, sem_t *sem)

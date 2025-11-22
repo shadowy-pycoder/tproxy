@@ -108,12 +108,12 @@ void *handle_server_epoll(void *ssock)
                         close(client_sock);
                         break;
                     }
-                    Client *c = client_new(client_addr, client_sock);
-                    if (!setup_tproxy_connection(epfd, c)) {
+                    Client *src = client_new(client_addr, client_sock);
+                    if (!setup_tproxy_connection(epfd, src)) {
                         break;
                     }
                     pid_t tid = gettid();
-                    printf("INFO: [%d] Accepted connection from %s:%d\n", tid, c->addr.addr_str, c->addr.port);
+                    printf("INFO: [%d] Accepted connection from %s:%d\n", tid, src->addr.addr_str, src->addr.port);
                 }
             } else {
                 handle_client_events(epfd, conn, events[i].events);
@@ -159,10 +159,8 @@ int epoll_del(int epfd, Connection *conn)
 {
     switch (conn->side) {
     case SRC_SOCKET:
-        printf("Deleting %s:%d\n", conn->tun->src->addr.addr_str, conn->tun->src->addr.port);
         return epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->src->sock, NULL);
     case DST_SOCKET:
-        printf("Deleting %s:%d\n", conn->tun->dst->addr.addr_str, conn->tun->dst->addr.port);
         return epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->dst->sock, NULL);
     default:
         printf("ERROR: Unknown socket side %d\n", conn->side);
@@ -170,36 +168,36 @@ int epoll_del(int epfd, Connection *conn)
     }
 }
 
-bool setup_tproxy_connection(int epfd, Client *c)
+bool setup_tproxy_connection(int epfd, Client *src)
 {
     struct sockaddr_in dst_addr = { 0 };
     dst_addr.sin_family = AF_INET;
     socklen_t addr_len = sizeof(dst_addr);
-    Client *dst_client;
+    Client *dst;
     Tunnel *tun;
 
-    if (getsockname(c->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
+    if (getsockname(src->sock, (struct sockaddr *)&dst_addr, &addr_len) == 0) {
         int dst_sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
         if (dst_sock < 0) {
             printf("ERROR: Creating socket failed: %s\n", strerror(errno));
-            client_destroy(c);
+            client_destroy(src);
             return false;
         }
-        dst_client = client_new(dst_addr, dst_sock);
-        printf("INFO: Destination address is %s:%d\n", dst_client->addr.addr_str, dst_client->addr.port);
-        tun = tunnel_new(c, dst_client);
+        dst = client_new(dst_addr, dst_sock);
+        printf("INFO: Destination address is %s:%d\n", dst->addr.addr_str, dst->addr.port);
+        tun = tunnel_new(src, dst);
         int enable = 1;
-        if (setsockopt(dst_client->sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
+        if (setsockopt(dst->sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
             printf("ERROR: Setting IP_TRANSPARENT option for destination failed: %s\n", strerror(errno));
             tunnel_destroy(tun);
             return false;
         }
-        if (bind(dst_client->sock, (struct sockaddr *)&c->addr.raw, sizeof(c->addr.raw)) < 0) {
+        if (bind(dst->sock, (struct sockaddr *)&src->addr.raw, sizeof(src->addr.raw)) < 0) {
             printf("ERROR: Binding to destination address failed: %s\n", strerror(errno));
             tunnel_destroy(tun);
             return false;
         }
-        if (connect(dst_client->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
+        if (connect(dst->sock, (struct sockaddr *)&dst_addr, addr_len) < 0) {
             if (errno != EINPROGRESS) {
                 printf("ERROR: Connection to destination failed %s\n", strerror(errno));
                 tunnel_destroy(tun);
@@ -211,14 +209,14 @@ bool setup_tproxy_connection(int epfd, Client *c)
             tun->dst->connected = true;
         }
         Connection *conn1 = connection_new(tun, SRC_SOCKET);
-        if (epoll_add(epfd, conn1, EPOLLIN | EPOLLOUT | EPOLLET) < 0) {
+        if (epoll_add(epfd, conn1, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET) < 0) {
             printf("ERROR: Adding to epoll failed: %s\n", strerror(errno));
             connection_destroy(conn1);
             tunnel_destroy(tun);
             return false;
         }
         Connection *conn2 = connection_new(tun, DST_SOCKET);
-        if (epoll_add(epfd, conn2, EPOLLIN | EPOLLOUT | EPOLLET) < 0) {
+        if (epoll_add(epfd, conn2, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET) < 0) {
             printf("ERROR: Adding to epoll failed: %s\n", strerror(errno));
             if (epoll_del(epfd, conn2) < 0) {
                 printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
@@ -230,7 +228,7 @@ bool setup_tproxy_connection(int epfd, Client *c)
         }
     } else {
         printf("ERROR: Failed getting destination %s\n", strerror(errno));
-        client_destroy(c);
+        client_destroy(src);
         return false;
     }
     return true;
@@ -300,11 +298,16 @@ void connection_cleanup(int epfd, Connection *conn, Client *src, Client *dst, Tu
         printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
     }
     src->closed = true;
-#ifdef DEBUG
-    printf("DEBUG: State src.closed=%d dst.closed=%d\n", src->closed, dst->closed);
-#endif
     connection_destroy(conn);
-    if (dst->closed && src->closed) tunnel_destroy(tun);
+    if (dst->closed && src->closed) {
+        if (shutdown(src->sock, SHUT_RDWR) < 0) {
+            printf("ERROR: Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
+        }
+        if (shutdown(dst->sock, SHUT_RDWR) < 0) {
+            printf("ERROR: Shutting down failed for %s:%d: %s\n", dst->addr.addr_str, dst->addr.port, strerror(errno));
+        }
+        tunnel_destroy(tun);
+    }
 }
 
 void handle_client_events(int epfd, Connection *conn, uint32_t events)
@@ -324,9 +327,6 @@ void handle_client_events(int epfd, Connection *conn, uint32_t events)
         exit(EXIT_FAILURE);
     }
     Tunnel *tun = conn->tun;
-#ifdef DEBUG
-    printf("DEBUG: State src.closed=%d dst.closed=%d\n", src->closed, dst->closed);
-#endif
     if (events & EPOLLIN) {
 #ifdef DEBUG
         printf("DEBUG: Reading data from %s:%d\n", src->addr.addr_str, src->addr.port);
@@ -335,8 +335,9 @@ void handle_client_events(int epfd, Connection *conn, uint32_t events)
 #ifdef DEBUG
             printf("DEBUG: Reading data from %s:%d failed\n", src->addr.addr_str, src->addr.port);
 #endif
+            if (src->buf->size > 0) handle_write(src, dst);
             if (shutdown(dst->sock, SHUT_WR) < 0) {
-                printf("ERROR: Shutting down failed");
+                printf("ERROR: Shutting down failed: %s", strerror(errno));
             }
             connection_cleanup(epfd, conn, src, dst, tun);
             return;
@@ -355,9 +356,6 @@ void handle_client_events(int epfd, Connection *conn, uint32_t events)
         }
     } else if (events & EPOLLOUT) {
         if (dst->closed) {
-#ifdef DEBUG
-            printf("DEBUG: Destination %s:%d closed, closing connection to %s:%d\n", dst->addr.addr_str, dst->addr.port, src->addr.addr_str, src->addr.port);
-#endif
             connection_cleanup(epfd, conn, src, dst, tun);
             return;
         }
@@ -387,14 +385,14 @@ void handle_client_events(int epfd, Connection *conn, uint32_t events)
             connection_cleanup(epfd, conn, src, dst, tun);
             return;
         }
-    } else if ((events & EPOLLHUP) || (events & EPOLLRDHUP) || (events & EPOLLERR)) {
-        // TODO: proper dispatch
-        if (epoll_del(epfd, conn) < 0) {
-            printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
+    } else if (events & EPOLLRDHUP) {
+        if (src->buf->size > 0) handle_write(src, dst);
+        if (shutdown(dst->sock, SHUT_WR) < 0) {
+            printf("ERROR: Shutting down failed: %s", strerror(errno));
         }
-        src->closed = true;
-        connection_destroy(conn);
-        if (dst->closed && src->closed) tunnel_destroy(tun);
+        connection_cleanup(epfd, conn, src, dst, tun);
+    } else if ((events & EPOLLHUP) || (events & EPOLLERR)) {
+        connection_cleanup(epfd, conn, src, dst, tun);
     }
     return;
 }

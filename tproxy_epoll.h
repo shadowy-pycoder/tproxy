@@ -69,7 +69,7 @@ Tunnel *tunnel_new(Client *src, Client *dst);
 void tunnel_destroy(Tunnel *);
 Connection *connection_new(Tunnel *tun, SocketSide side);
 void connection_destroy(Connection *);
-bool setup_tproxy_connection(int epfd, Client *c);
+bool setup_tproxy_connection(int epfd, Client *src);
 int setnonblocking(int fd);
 int epoll_add(int epfd, Connection *conn, uint32_t events);
 int epoll_mod(int epfd, Connection *conn, uint32_t events);
