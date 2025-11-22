@@ -301,10 +301,12 @@ void connection_cleanup(int epfd, Connection *conn, Client *src, Client *dst, Tu
     connection_destroy(conn);
     if (dst->closed && src->closed) {
         if (shutdown(src->sock, SHUT_RDWR) < 0) {
-            printf("ERROR: Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
+            if (errno != ENOTCONN)
+                printf("ERROR: Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
         }
         if (shutdown(dst->sock, SHUT_RDWR) < 0) {
-            printf("ERROR: Shutting down failed for %s:%d: %s\n", dst->addr.addr_str, dst->addr.port, strerror(errno));
+            if (errno != ENOTCONN)
+                printf("ERROR: Shutting down failed for %s:%d: %s\n", dst->addr.addr_str, dst->addr.port, strerror(errno));
         }
         tunnel_destroy(tun);
     }
