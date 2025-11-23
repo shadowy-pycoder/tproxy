@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
 
 #include "tproxy_epoll.h"
@@ -36,6 +37,13 @@ int setnonblocking(int fd)
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+int set_timeout(int tsock, int sec)
+{
+    struct itimerspec new_value = { 0 };
+    new_value.it_value.tv_sec = sec;
+    return timerfd_settime(tsock, 0, &new_value, NULL);
 }
 
 void *handle_server_epoll(void *ssock)
@@ -76,9 +84,11 @@ void *handle_server_epoll(void *ssock)
             Connection *conn = (Connection *)events[i].data.ptr;
             switch (conn->side) {
             case SRC_SOCKET:
+            case SRC_SOCKET_TIMEOUT:
                 fd = conn->tun->src->sock;
                 break;
             case DST_SOCKET:
+            case DST_SOCKET_TIMEOUT:
                 fd = conn->tun->dst->sock;
                 break;
             default:
@@ -108,7 +118,13 @@ void *handle_server_epoll(void *ssock)
                         close(client_sock);
                         break;
                     }
-                    Client *src = client_new(client_addr, client_sock);
+                    int tsock = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+                    if (tsock < 0) {
+                        printf("ERROR: Creating timeout failed: %s\n", strerror(errno));
+                        close(client_sock);
+                        break;
+                    }
+                    Client *src = client_new(client_addr, client_sock, tsock);
                     if (!setup_tproxy_connection(epfd, src)) {
                         break;
                     }
@@ -131,8 +147,12 @@ int epoll_add(int epfd, Connection *conn, uint32_t events)
     switch (conn->side) {
     case SRC_SOCKET:
         return epoll_ctl(epfd, EPOLL_CTL_ADD, conn->tun->src->sock, &ev);
+    case SRC_SOCKET_TIMEOUT:
+        return epoll_ctl(epfd, EPOLL_CTL_ADD, conn->tun->src->tsock, &ev);
     case DST_SOCKET:
         return epoll_ctl(epfd, EPOLL_CTL_ADD, conn->tun->dst->sock, &ev);
+    case DST_SOCKET_TIMEOUT:
+        return epoll_ctl(epfd, EPOLL_CTL_ADD, conn->tun->dst->tsock, &ev);
     default:
         printf("ERROR: Unknown socket side %d\n", conn->side);
         return -1;
@@ -147,8 +167,12 @@ int epoll_mod(int epfd, Connection *conn, uint32_t events)
     switch (conn->side) {
     case SRC_SOCKET:
         return epoll_ctl(epfd, EPOLL_CTL_MOD, conn->tun->src->sock, &ev);
+    case SRC_SOCKET_TIMEOUT:
+        return epoll_ctl(epfd, EPOLL_CTL_MOD, conn->tun->src->tsock, &ev);
     case DST_SOCKET:
         return epoll_ctl(epfd, EPOLL_CTL_MOD, conn->tun->dst->sock, &ev);
+    case DST_SOCKET_TIMEOUT:
+        return epoll_ctl(epfd, EPOLL_CTL_MOD, conn->tun->dst->tsock, &ev);
     default:
         printf("ERROR: Unknown socket side %d\n", conn->side);
         return -1;
@@ -159,9 +183,13 @@ int epoll_del(int epfd, Connection *conn)
 {
     switch (conn->side) {
     case SRC_SOCKET:
-        return epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->src->sock, NULL);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->src->sock, NULL);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->src->tsock, NULL);
+        return 0;
     case DST_SOCKET:
-        return epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->dst->sock, NULL);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->dst->sock, NULL);
+        epoll_ctl(epfd, EPOLL_CTL_DEL, conn->tun->dst->tsock, NULL);
+        return 0;
     default:
         printf("ERROR: Unknown socket side %d\n", conn->side);
         return -1;
@@ -183,7 +211,13 @@ bool setup_tproxy_connection(int epfd, Client *src)
             client_destroy(src);
             return false;
         }
-        dst = client_new(dst_addr, dst_sock);
+        int tsock = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
+        if (tsock < 0) {
+            printf("ERROR: Creating timeout failed: %s\n", strerror(errno));
+            client_destroy(src);
+            return false;
+        }
+        dst = client_new(dst_addr, dst_sock, tsock);
         printf("INFO: Destination address is %s:%d\n", dst->addr.addr_str, dst->addr.port);
         tun = tunnel_new(src, dst);
         int enable = 1;
@@ -215,13 +249,40 @@ bool setup_tproxy_connection(int epfd, Client *src)
             tunnel_destroy(tun);
             return false;
         }
+        Connection *conn1_timeout = connection_new(tun, SRC_SOCKET_TIMEOUT);
+        if ((epoll_add(epfd, conn1_timeout, EPOLLIN | EPOLLET) < 0) || (set_timeout(tun->src->tsock, TIMEOUT) < 0)) {
+            printf("ERROR: Adding timeout to epoll failed: %s\n", strerror(errno));
+            if (epoll_del(epfd, conn1) < 0) {
+                printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
+            }
+            connection_destroy(conn1);
+            connection_destroy(conn1_timeout);
+            tunnel_destroy(tun);
+            return false;
+        }
         Connection *conn2 = connection_new(tun, DST_SOCKET);
         if (epoll_add(epfd, conn2, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET) < 0) {
             printf("ERROR: Adding to epoll failed: %s\n", strerror(errno));
+            if (epoll_del(epfd, conn1) < 0) {
+                printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
+            }
+            connection_destroy(conn1);
+            connection_destroy(conn1_timeout);
+            connection_destroy(conn2);
+            tunnel_destroy(tun);
+            return false;
+        }
+        Connection *conn2_timeout = connection_new(tun, DST_SOCKET_TIMEOUT);
+        if ((epoll_add(epfd, conn2_timeout, EPOLLIN | EPOLLET) < 0) || (set_timeout(tun->src->tsock, TIMEOUT) < 0)) {
+            printf("ERROR: Adding timeout to epoll failed: %s\n", strerror(errno));
+            if (epoll_del(epfd, conn1) < 0) {
+                printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
+            }
             if (epoll_del(epfd, conn2) < 0) {
                 printf("ERROR: Removing from epoll failed: %s\n", strerror(errno));
             }
             connection_destroy(conn1);
+            connection_destroy(conn1_timeout);
             connection_destroy(conn2);
             tunnel_destroy(tun);
             return false;
@@ -259,6 +320,7 @@ bool handle_write(Client *src, Client *dst)
                 src->buf->size = 0;
                 break;
             }
+            set_timeout(dst->tsock, TIMEOUT);
         }
     }
     if (written)
@@ -287,6 +349,7 @@ bool handle_read(Client *src)
             if (src->buf->size >= buf_size) {
                 break;
             }
+            set_timeout(src->tsock, TIMEOUT);
         }
     }
     return true;
@@ -315,25 +378,47 @@ void connection_cleanup(int epfd, Connection *conn, Client *src, Client *dst, Tu
 void handle_client_events(int epfd, Connection *conn, uint32_t events)
 {
     Client *src, *dst;
+    bool timeout = false;
     switch (conn->side) {
     case SRC_SOCKET:
         src = conn->tun->src;
         dst = conn->tun->dst;
         break;
+    case SRC_SOCKET_TIMEOUT:
+        src = conn->tun->src;
+        dst = conn->tun->dst;
+        timeout = true;
+        break;
     case DST_SOCKET:
         src = conn->tun->dst;
         dst = conn->tun->src;
+        break;
+    case DST_SOCKET_TIMEOUT:
+        src = conn->tun->dst;
+        dst = conn->tun->src;
+        timeout = true;
         break;
     default:
         printf("ERROR: Unknown socket side %d\n", conn->side);
         exit(EXIT_FAILURE);
     }
     Tunnel *tun = conn->tun;
+    if (timeout) {
+        printf("ERROR: %s:%d -> %s:%d timeout\n", src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+        uint64_t exp;
+        int res = read(src->tsock, &exp, sizeof(exp));
+        (void)res;
+        src->closed = true;
+        if (shutdown(src->sock, SHUT_RD) < 0) {
+            printf("ERROR: Shutting down failed: %s", strerror(errno));
+        }
+        return;
+    }
     if (events & EPOLLIN) {
 #ifdef DEBUG
         printf("DEBUG: Reading data from %s:%d\n", src->addr.addr_str, src->addr.port);
 #endif
-        if (!(handle_read(src))) {
+        if (src->closed || !(handle_read(src))) {
 #ifdef DEBUG
             printf("DEBUG: Reading data from %s:%d failed\n", src->addr.addr_str, src->addr.port);
 #endif
@@ -399,11 +484,12 @@ void handle_client_events(int epfd, Connection *conn, uint32_t events)
     return;
 }
 
-Client *client_new(struct sockaddr_in addr, int sock)
+Client *client_new(struct sockaddr_in addr, int sock, int tsock)
 {
     Client *c = (Client *)malloc(sizeof(Client));
     if (c == NULL) exit(EXIT_FAILURE);
     c->sock = sock;
+    c->tsock = tsock;
     c->addr.raw = addr;
     c->connected = true;
     c->closed = false;
@@ -428,6 +514,7 @@ void client_destroy(Client *c)
     } else {
         printf("INFO: Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
     }
+    close(c->tsock);
     free(c->buf);
     free(c);
 }
@@ -451,7 +538,7 @@ void tunnel_destroy(Tunnel *tun)
 Connection *connection_new(Tunnel *tun, SocketSide side)
 {
     Connection *conn = malloc(sizeof(Connection));
-    if (tun == NULL) exit(EXIT_FAILURE);
+    if (conn == NULL) exit(EXIT_FAILURE);
     conn->tun = tun;
     conn->side = side;
     return conn;

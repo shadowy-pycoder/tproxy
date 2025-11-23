@@ -27,6 +27,7 @@
 
 #define ADDR_SIZE 50
 #define BUF_SIZE  (32 * 1024)
+#define TIMEOUT   10
 
 typedef struct {
     struct sockaddr_in raw;
@@ -42,6 +43,7 @@ typedef struct {
 
 typedef struct {
     int sock;
+    int tsock;
     bool connected;
     bool closed;
     Address addr;
@@ -55,7 +57,9 @@ typedef struct {
 
 typedef enum {
     SRC_SOCKET,
-    DST_SOCKET
+    SRC_SOCKET_TIMEOUT,
+    DST_SOCKET,
+    DST_SOCKET_TIMEOUT,
 } SocketSide;
 
 typedef struct {
@@ -63,7 +67,7 @@ typedef struct {
     SocketSide side;
 } Connection;
 
-Client *client_new(struct sockaddr_in addr, int sock);
+Client *client_new(struct sockaddr_in addr, int sock, int tsock);
 void client_destroy(Client *);
 Tunnel *tunnel_new(Client *src, Client *dst);
 void tunnel_destroy(Tunnel *);
@@ -79,4 +83,5 @@ void *handle_server_epoll(void *ssock);
 bool handle_write(Client *src, Client *dst);
 bool handle_read(Client *src);
 void connection_cleanup(int epfd, Connection *conn, Client *src, Client *dst, Tunnel *tun);
+int set_timeout(int tsock, int sec);
 #endif // TPROXY_EPOLL_H
