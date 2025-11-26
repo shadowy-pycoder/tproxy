@@ -25,12 +25,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define ADDR_SIZE 50
-#define BUF_SIZE  (32 * 1024)
-#define TIMEOUT   10
+#define ADDR_SIZE     50
+#define BUF_SIZE      (32 * 1024)
+#define READ_TIMEOUT  10
+#define WRITE_TIMEOUT 10
+
+typedef const struct sockaddr_in SockAddr;
 
 typedef struct {
-    struct sockaddr_in raw;
     int port;
     char addr_str[ADDR_SIZE];
 } Address;
@@ -41,47 +43,47 @@ typedef struct {
     int offset;
 } Buffer;
 
-typedef struct {
-    int sock;
-    int tsock;
+typedef struct Tunnel Tunnel;
+typedef struct Connection Connection;
+
+typedef struct Socket {
+    int fd;
+    Connection *c;
+} Socket;
+
+struct Connection {
+    Socket *sock;
+    Socket *rtsock;
+    Socket *wtsock;
     bool connected;
-    bool closed;
+    bool rclosed;
+    bool wclosed;
     Address addr;
     Buffer *buf;
-} Client;
-
-typedef struct {
-    Client *src;
-    Client *dst;
-} Tunnel;
-
-typedef enum {
-    SRC_SOCKET,
-    SRC_SOCKET_TIMEOUT,
-    DST_SOCKET,
-    DST_SOCKET_TIMEOUT,
-} SocketSide;
-
-typedef struct {
     Tunnel *tun;
-    SocketSide side;
-} Connection;
+    Connection *other;
+    uint64_t written;
+};
 
-Client *client_new(struct sockaddr_in addr, int sock, int tsock);
-void client_destroy(Client *);
-Tunnel *tunnel_new(Client *src, Client *dst);
-void tunnel_destroy(Tunnel *);
-Connection *connection_new(Tunnel *tun, SocketSide side);
-void connection_destroy(Connection *);
-bool setup_tproxy_connection(int epfd, Client *src);
-int setnonblocking(int fd);
-int epoll_add(int epfd, Connection *conn, uint32_t events);
-int epoll_mod(int epfd, Connection *conn, uint32_t events);
-int epoll_del(int epfd, Connection *conn);
-void handle_client_events(int epfd, Connection *conn, uint32_t events);
-void *handle_server_epoll(void *ssock);
-bool handle_write(Client *src, Client *dst);
-bool handle_read(Client *src);
-void connection_cleanup(int epfd, Connection *conn, Client *src, Client *dst, Tunnel *tun);
+struct Tunnel {
+    Connection src;
+    Connection dst;
+};
+
+bool tunnel_new(Tunnel *tun, int src, int dst, SockAddr src_addr, SockAddr dst_addr);
+void tunnel_destroy(Tunnel *tun);
+bool connection_new(Connection *c, int sock, Tunnel *tun, SockAddr addr);
+void connection_destroy(Connection *c);
+bool setup_tproxy_connection(int epfd, int src_sock, SockAddr src_addr);
 int set_timeout(int tsock, int sec);
+int setnonblocking(int fd);
+bool sockets_register(int epfd, Connection *src, Connection *dst);
+int epoll_add(int epfd, Socket *sock, uint32_t events);
+int epoll_mod(int epfd, Socket *sock, uint32_t events);
+int epoll_del(int epfd, Socket *sock);
+void handle_client_events(int epfd, Socket *sock, uint32_t events);
+bool handle_write(Connection *src, Connection *dst);
+bool handle_read(Connection *src);
+void *handle_server_epoll(void *ssock);
+void connection_cleanup(int epfd, Connection *src, Connection *dst);
 #endif // TPROXY_EPOLL_H
