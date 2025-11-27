@@ -17,6 +17,7 @@
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -47,12 +48,14 @@ int set_timeout(int tsock, int sec)
 
 void *handle_server_epoll(void *ssock)
 {
+    pid_t tid = gettid();
     struct epoll_event *events = malloc(sizeof(struct epoll_event) * MAX_EVENTS);
     if (events == NULL) exit(EXIT_FAILURE);
     int server_sock = *(int *)ssock;
+    free(ssock);
     int epfd = epoll_create1(0);
     if (epfd < 0) {
-        printf("ERROR: Creating epoll file descriptor failed %s\n", strerror(errno));
+        printf("ERROR: [%d] Creating epoll file descriptor failed %s\n", tid, strerror(errno));
         free(events);
         exit(EXIT_FAILURE);
     }
@@ -63,7 +66,7 @@ void *handle_server_epoll(void *ssock)
     c->sock->fd = server_sock;
     c->sock->c = c;
     if (epoll_add(epfd, c->sock, EPOLLIN | EPOLLET) < 0) {
-        printf("ERROR: Adding server socket to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Adding server socket to epoll failed: %s\n", tid, strerror(errno));
         close(server_sock);
         free(events);
         free(c->sock);
@@ -74,7 +77,7 @@ void *handle_server_epoll(void *ssock)
     while (true) {
         nready = epoll_wait(epfd, events, MAX_EVENTS, -1);
         if (nready < 0) {
-            printf("ERROR: Waiting for epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Waiting for epoll failed: %s\n", tid, strerror(errno));
             exit(EXIT_FAILURE);
         }
         for (int i = 0; i < nready; i++) {
@@ -83,7 +86,7 @@ void *handle_server_epoll(void *ssock)
             Socket *sock = (Socket *)events[i].data.ptr;
             if (sock->fd == server_sock) {
                 if (!(events[i].events & EPOLLIN)) {
-                    printf("INFO: Server is not ready to accept connections %d\n", events[i].events);
+                    printf("INFO: [%d] Server is not ready to accept connections %d\n", tid, events[i].events);
                     continue;
                 }
                 while (true) {
@@ -95,7 +98,7 @@ void *handle_server_epoll(void *ssock)
                         if (errno == EAGAIN || errno == EWOULDBLOCK) {
                             break;
                         }
-                        printf("ERROR: Accept connection failed: %s\n", strerror(errno));
+                        printf("ERROR: [%d] Accept connection failed: %s\n", tid, strerror(errno));
                         break;
                     }
                     if (!setup_tproxy_connection(epfd, client_sock, client_addr)) {
@@ -181,89 +184,89 @@ bool setup_tproxy_connection(int epfd, int src_sock, SockAddr src_addr)
 
 bool sockets_register(int epfd, Connection *src, Connection *dst)
 {
-
+    pid_t tid = gettid();
     if (set_timeout(src->rtsock->fd, READ_TIMEOUT) < 0) {
-        printf("ERROR: setting read timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] setting read timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     if (set_timeout(src->wtsock->fd, WRITE_TIMEOUT) < 0) {
-        printf("ERROR: setting write timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] setting write timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     if (set_timeout(dst->rtsock->fd, READ_TIMEOUT) < 0) {
-        printf("ERROR: setting read timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] setting read timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     if (set_timeout(dst->wtsock->fd, WRITE_TIMEOUT) < 0) {
-        printf("ERROR: setting write timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] setting write timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     if (epoll_add(epfd, src->sock, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET) < 0) {
-        printf("ERROR: Adding client socket to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Adding client socket to epoll failed: %s\n", tid, strerror(errno));
         return false;
     }
     if (epoll_add(epfd, src->rtsock, EPOLLIN | EPOLLET) < 0) {
-        printf("ERROR: Adding read timeout socket to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Adding read timeout socket to epoll failed: %s\n", tid, strerror(errno));
         if (epoll_del(epfd, src->sock) < 0) {
-            printf("ERROR: Removing read timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing read timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         return false;
     }
     if (epoll_add(epfd, src->wtsock, EPOLLIN | EPOLLET) < 0) {
-        printf("ERROR: Adding write timeout socket to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Adding write timeout socket to epoll failed: %s\n", tid, strerror(errno));
         if (epoll_del(epfd, src->sock) < 0) {
-            printf("ERROR: Removing client socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing client socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->rtsock) < 0) {
-            printf("ERROR: Removing read timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing read timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         return false;
     }
     if (epoll_add(epfd, dst->sock, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET) < 0) {
-        printf("ERROR: Adding client socket to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Adding client socket to epoll failed: %s\n", tid, strerror(errno));
         if (epoll_del(epfd, src->sock) < 0) {
-            printf("ERROR: Removing client socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing client socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->rtsock) < 0) {
-            printf("ERROR: Removing read timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing read timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->rtsock) < 0) {
-            printf("ERROR: Removing write timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing write timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         return false;
     }
     if (epoll_add(epfd, dst->rtsock, EPOLLIN | EPOLLET) < 0) {
-        printf("ERROR: Adding read timeout socket to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Adding read timeout socket to epoll failed: %s\n", tid, strerror(errno));
         if (epoll_del(epfd, dst->sock) < 0) {
-            printf("ERROR: Removing read timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing read timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->sock) < 0) {
-            printf("ERROR: Removing client socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing client socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->rtsock) < 0) {
-            printf("ERROR: Removing read timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing read timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->rtsock) < 0) {
-            printf("ERROR: Removing write timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing write timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         return false;
     }
     if (epoll_add(epfd, dst->wtsock, EPOLLIN | EPOLLET) < 0) {
-        printf("ERROR: Adding write timeout socket to epoll failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Adding write timeout socket to epoll failed: %s\n", tid, strerror(errno));
         if (epoll_del(epfd, dst->sock) < 0) {
-            printf("ERROR: Removing client socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing client socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, dst->rtsock) < 0) {
-            printf("ERROR: Removing read timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing read timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->sock) < 0) {
-            printf("ERROR: Removing client socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing client socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->rtsock) < 0) {
-            printf("ERROR: Removing read timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing read timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         if (epoll_del(epfd, src->rtsock) < 0) {
-            printf("ERROR: Removing write timeout socket from epoll failed: %s\n", strerror(errno));
+            printf("ERROR: [%d] Removing write timeout socket from epoll failed: %s\n", tid, strerror(errno));
         }
         return false;
     }
@@ -272,6 +275,9 @@ bool sockets_register(int epfd, Connection *src, Connection *dst)
 
 void handle_client_events(int epfd, Socket *sock, uint32_t events)
 {
+    pid_t tid = gettid();
+    assert(sock != NULL);
+    assert(sock->c != NULL);
     Connection *src = sock->c;
     Connection *dst = sock->c->other;
     if ((events & EPOLLHUP) || (events & EPOLLERR)) {
@@ -282,50 +288,53 @@ void handle_client_events(int epfd, Socket *sock, uint32_t events)
         goto cleanup;
     }
     if (events & EPOLLRDHUP) {
+        handle_read(src);
         if (src->buf->size > 0 && !dst->wclosed) handle_write(src, dst);
-        if (shutdown(src->sock->fd, SHUT_WR) < 0) {
-            printf("ERROR: Shutting down failed: %s", strerror(errno));
+        if (!dst->wclosed) {
+            if (shutdown(dst->sock->fd, SHUT_WR) < 0) {
+                printf("ERROR: [%d] Shutting down failed: %s", tid, strerror(errno));
+            }
+            dst->wclosed = true;
         }
         src->rclosed = true;
-        dst->wclosed = true;
         goto cleanup;
     }
-    bool read_timeout = false;
-    bool write_timeout = false;
-    if (sock->fd == src->rtsock->fd) {
-        read_timeout = true;
-    } else if (sock->fd == src->wtsock->fd) {
-        write_timeout = true;
-    }
+    bool read_timeout = sock->fd == src->rtsock->fd;
+    bool write_timeout = sock->fd == src->wtsock->fd;
     if (read_timeout) {
 #ifdef DEBUG
-        printf("DEBUG: %s:%d read timeout\n", src->addr.addr_str, src->addr.port);
+        printf("DEBUG: [%d] %s:%d read timeout\n", tid, src->addr.addr_str, src->addr.port);
 #endif
         uint64_t exp;
         int res = read(src->rtsock->fd, &exp, sizeof(exp));
         (void)res;
-        src->rclosed = true;
+        handle_read(src);
         if (src->buf->size > 0 && !dst->wclosed) handle_write(src, dst);
+        src->rclosed = true;
+        dst->wclosed = true;
         goto cleanup;
     }
     if (write_timeout) {
 #ifdef DEBUG
-        printf("DEBUG: %s:%d write timeout\n", src->addr.addr_str, src->addr.port);
+        printf("DEBUG: [%d] %s:%d write timeout\n", tid, src->addr.addr_str, src->addr.port);
 #endif
         uint64_t exp;
         int res = read(src->wtsock->fd, &exp, sizeof(exp));
         (void)res;
         src->wclosed = true;
+        dst->rclosed = true;
         goto cleanup;
     }
     if (events & EPOLLIN) {
         if (!(handle_read(src))) {
             if (src->buf->size > 0 && !dst->wclosed) handle_write(src, dst);
-            if (shutdown(dst->sock->fd, SHUT_WR) < 0) {
-                printf("ERROR: Shutting down failed: %s", strerror(errno));
+            if (!dst->wclosed) {
+                if (shutdown(dst->sock->fd, SHUT_WR) < 0) {
+                    printf("ERROR: [%d] Shutting down failed: %s", tid, strerror(errno));
+                }
+                dst->wclosed = true;
             }
             src->rclosed = true;
-            dst->wclosed = true;
             goto cleanup;
         }
         if (dst->connected && !dst->wclosed) {
@@ -337,12 +346,12 @@ void handle_client_events(int epfd, Socket *sock, uint32_t events)
     } else if (events & EPOLLOUT) {
         if (!src->connected) {
 #ifdef DEBUG
-            printf("DEBUG: Connecting %s:%d\n", src->addr.addr_str, src->addr.port);
+            printf("DEBUG: [%d] Connecting %s:%d\n", tid, src->addr.addr_str, src->addr.port);
 #endif
             int err;
             socklen_t len = sizeof(err);
             if (getsockopt(src->sock->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
-                printf("ERROR: Connect failed: %s\n", strerror(err));
+                printf("ERROR: [%d] Connect failed: %s\n", tid, strerror(err));
                 src->rclosed = true;
                 src->wclosed = true;
                 dst->rclosed = true;
@@ -351,17 +360,18 @@ void handle_client_events(int epfd, Socket *sock, uint32_t events)
             }
             src->connected = true;
 #ifdef DEBUG
-            printf("DEBUG: Connected %s:%d\n", src->addr.addr_str, src->addr.port);
+            printf("DEBUG: [%d] Connected %s:%d\n", tid, src->addr.addr_str, src->addr.port);
 #endif
         }
         if (dst->rclosed || !(handle_write(dst, src))) {
             src->wclosed = true;
+            dst->rclosed = true;
             goto cleanup;
         }
     }
 cleanup:
 #ifdef DEBUG
-    printf("DEBUG: STATE src=%s:%d dst=%s:%d src.rclosed=%d, src.wclosed=%d dst.rclosed=%d dst.wclosed=%d\n",
+    printf("DEBUG: [%d] STATE src=%s:%d dst=%s:%d src.rclosed=%d, src.wclosed=%d dst.rclosed=%d dst.wclosed=%d\n", tid,
         src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port,
         src->rclosed, src->wclosed, dst->rclosed, dst->wclosed);
 #endif
@@ -371,22 +381,25 @@ cleanup:
 
 bool handle_read(Connection *src)
 {
+    pid_t tid = gettid();
     int buf_size = sizeof(src->buf->data);
     while (true) {
         int nr = read(src->sock->fd, src->buf->data + src->buf->size, buf_size - src->buf->size);
         if (nr < 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) break;
             if (errno == EINTR) continue;
-            printf("ERROR: Reading message from %s:%d failed: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
+            printf("ERROR: [%d] Reading message from %s:%d failed: %s\n", tid, src->addr.addr_str, src->addr.port, strerror(errno));
             return false;
         } else if (nr == 0) {
-            printf("INFO: %s:%d:EOF\n", src->addr.addr_str, src->addr.port);
+#ifdef DEBUG
+            printf("DEBUG: [%d] %s:%d:EOF\n", tid, src->addr.addr_str, src->addr.port);
+#endif
             return false;
         } else {
             src->buf->size += nr;
             set_timeout(src->rtsock->fd, READ_TIMEOUT);
 #ifdef DEBUG
-            printf("DEBUG: Read %d bytes from client %s:%d\n", nr, src->addr.addr_str, src->addr.port);
+            printf("DEBUG: [%d] Read %d bytes from client %s:%d\n", tid, nr, src->addr.addr_str, src->addr.port);
 #endif
             if (src->buf->size >= buf_size) {
                 break;
@@ -398,12 +411,13 @@ bool handle_read(Connection *src)
 
 bool handle_write(Connection *src, Connection *dst)
 {
+    pid_t tid = gettid();
     while (true) {
         int nw = write(dst->sock->fd, src->buf->data + src->buf->offset, src->buf->size - src->buf->offset);
         if (nw < 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) break;
             if (errno == EINTR) continue;
-            printf("ERROR: Writing message %s:%d -> %s:%d failedi: %s\n", src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port, strerror(errno));
+            printf("ERROR: [%d] Writing message %s:%d -> %s:%d failedi: %s\n", tid, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port, strerror(errno));
             return false;
         } else if (nw == 0) {
             break;
@@ -412,7 +426,7 @@ bool handle_write(Connection *src, Connection *dst)
             src->buf->offset += nw;
             set_timeout(dst->wtsock->fd, WRITE_TIMEOUT);
 #ifdef DEBUG
-            printf("DEBUG: Written %d bytes %s:%d -> %s:%d\n", nw, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+            printf("DEBUG: [%d] Written %d bytes %s:%d -> %s:%d\n", tid, nw, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
 #endif
             if (src->buf->offset >= src->buf->size) {
                 src->buf->offset = 0;
@@ -427,24 +441,25 @@ bool handle_write(Connection *src, Connection *dst)
 void connection_cleanup(int epfd, Connection *src, Connection *dst)
 {
     if (src->rclosed && src->wclosed && dst->rclosed && dst->wclosed) {
-        epoll_ctl(epfd, EPOLL_CTL_DEL, src->sock->fd, NULL);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, src->rtsock->fd, NULL);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, src->wtsock->fd, NULL);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, dst->sock->fd, NULL);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, dst->rtsock->fd, NULL);
-        epoll_ctl(epfd, EPOLL_CTL_DEL, dst->wtsock->fd, NULL);
+        pid_t tid = gettid();
+        epoll_del(epfd, src->sock);
+        epoll_del(epfd, src->rtsock);
+        epoll_del(epfd, src->wtsock);
+        epoll_del(epfd, dst->sock);
+        epoll_del(epfd, dst->rtsock);
+        epoll_del(epfd, dst->wtsock);
         if (shutdown(src->sock->fd, SHUT_RDWR) < 0) {
             if (errno != ENOTCONN)
-                printf("ERROR: Shutting down failed for %s:%d: %s\n", src->addr.addr_str, src->addr.port, strerror(errno));
+                printf("ERROR: [%d] Shutting down failed for %s:%d: %s\n", tid, src->addr.addr_str, src->addr.port, strerror(errno));
         }
         if (shutdown(dst->sock->fd, SHUT_RDWR) < 0) {
             if (errno != ENOTCONN)
-                printf("ERROR: Shutting down failed for %s:%d: %s\n", dst->addr.addr_str, dst->addr.port, strerror(errno));
+                printf("ERROR: [%d] Shutting down failed for %s:%d: %s\n", tid, dst->addr.addr_str, dst->addr.port, strerror(errno));
         }
         if (src->written)
-            printf("INFO: Written %lu bytes %s:%d -> %s:%d\n", src->written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
+            printf("INFO: [%d] Written %lu bytes %s:%d -> %s:%d\n", tid, src->written, src->addr.addr_str, src->addr.port, dst->addr.addr_str, dst->addr.port);
         if (dst->written)
-            printf("INFO: Written %lu bytes %s:%d -> %s:%d\n", dst->written, dst->addr.addr_str, dst->addr.port, src->addr.addr_str, src->addr.port);
+            printf("INFO: [%d] Written %lu bytes %s:%d -> %s:%d\n", tid, dst->written, dst->addr.addr_str, dst->addr.port, src->addr.addr_str, src->addr.port);
         tunnel_destroy(src->tun);
     }
 }
@@ -489,38 +504,39 @@ void tunnel_destroy(Tunnel *tun)
 
 bool connection_new(Connection *c, int sock, Tunnel *tun, SockAddr addr)
 {
+    pid_t tid = gettid();
     memset(c, 0, sizeof(*c));
     c->sock = (Socket *)malloc(sizeof(Socket));
     if (c->sock == NULL) {
-        printf("ERROR: Allocating memory for socket failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Allocating memory for socket failed: %s\n", tid, strerror(errno));
         return false;
     }
     c->sock->c = c;
     c->sock->fd = sock;
     if (c->sock->fd < 0) {
-        printf("ERROR: Creating socket failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Creating socket failed: %s\n", tid, strerror(errno));
         return false;
     }
     c->rtsock = (Socket *)malloc(sizeof(Socket));
     if (c->rtsock == NULL) {
-        printf("ERROR: Allocating memory for read timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Allocating memory for read timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     c->rtsock->c = c;
     c->rtsock->fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     if (c->rtsock->fd < 0) {
-        printf("ERROR: Creating read timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Creating read timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     c->wtsock = (Socket *)malloc(sizeof(Socket));
     if (c->wtsock == NULL) {
-        printf("ERROR: Allocating memory for read timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Allocating memory for read timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     c->wtsock->c = c;
     c->wtsock->fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK);
     if (c->wtsock->fd < 0) {
-        printf("ERROR: Creating write timeout failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Creating write timeout failed: %s\n", tid, strerror(errno));
         return false;
     }
     c->connected = true;
@@ -532,7 +548,7 @@ bool connection_new(Connection *c, int sock, Tunnel *tun, SockAddr addr)
     c->addr.port = ntohs(addr.sin_port);
     c->buf = (Buffer *)malloc(sizeof(Buffer));
     if (c->buf == NULL) {
-        printf("ERROR: Allocating memory for buffer failed: %s\n", strerror(errno));
+        printf("ERROR: [%d] Allocating memory for buffer failed: %s\n", tid, strerror(errno));
         return false;
     }
     memset(c->buf, 0, sizeof(Buffer));
@@ -542,11 +558,12 @@ bool connection_new(Connection *c, int sock, Tunnel *tun, SockAddr addr)
 
 void connection_destroy(Connection *c)
 {
-    printf("INFO: Closing connection %s:%d\n", c->addr.addr_str, c->addr.port);
+    pid_t tid = gettid();
+    printf("INFO: [%d] Closing connection %s:%d\n", tid, c->addr.addr_str, c->addr.port);
     if (close(c->sock->fd) < 0) {
-        printf("ERROR: Closing socket failed for %s:%d: %s\n", c->addr.addr_str, c->addr.port, strerror(errno));
+        printf("ERROR: [%d] Closing socket failed for %s:%d: %s\n", tid, c->addr.addr_str, c->addr.port, strerror(errno));
     } else {
-        printf("INFO: Connection to %s:%d closed\n", c->addr.addr_str, c->addr.port);
+        printf("INFO: [%d] Connection to %s:%d closed\n", tid, c->addr.addr_str, c->addr.port);
     }
     close(c->rtsock->fd);
     close(c->wtsock->fd);

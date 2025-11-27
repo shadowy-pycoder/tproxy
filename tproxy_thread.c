@@ -57,6 +57,7 @@ void *handle_tproxy_connection_thread(void *client)
 void *handle_server_thread(void *ssock)
 {
     int server_sock = *(int *)ssock;
+    free(ssock);
     while (true) {
         struct sockaddr_in client_addr = { 0 };
         client_addr.sin_family = AF_INET;

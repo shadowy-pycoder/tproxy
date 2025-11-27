@@ -1,6 +1,6 @@
 TARGET = tproxy
 CC = gcc
-CFLAGS = -g -Wall -Wextra -Os -std=c2x -march=native
+CFLAGS = -ggdb -Wall -Wextra -Os -std=c2x -march=native
 CPPFLAGS=
 SERVER_HOST =  0.0.0.0
 SERVER_PORT = 8888

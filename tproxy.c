@@ -119,12 +119,13 @@ int main(int argc, char **argv)
     printf("INFO: Starting %d epoll servers\n", SERVER_WORKERS);
 #endif
     for (int i = 0; i < SERVER_WORKERS; i++) {
-        int server_sock = create_tproxy_server(ip, port);
+        int *server_sock = malloc(sizeof(int));
+        *server_sock = create_tproxy_server(ip, port);
         pthread_t thread;
 #ifdef USE_THREADS
-        pthread_create(&thread, NULL, handle_server_thread, &server_sock);
+        pthread_create(&thread, NULL, handle_server_thread, server_sock);
 #else
-        pthread_create(&thread, NULL, handle_server_epoll, &server_sock);
+        pthread_create(&thread, NULL, handle_server_epoll, server_sock);
 #endif // USE_THREADS
         pthread_detach(thread);
     }
