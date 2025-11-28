@@ -20,7 +20,7 @@
 #define HOST            "0.0.0.0"
 #define PORT            8888
 #define MAX_CONNECTIONS 4092
-#define SERVER_WORKERS  100
+#define SERVER_WORKERS  10
 
 /* Create a TCP server listening on address specified by host and port parameters.
  *

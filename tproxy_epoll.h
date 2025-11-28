@@ -24,11 +24,13 @@
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/epoll.h>
 
 #define ADDR_SIZE     50
 #define BUF_SIZE      (32 * 1024)
 #define READ_TIMEOUT  10
 #define WRITE_TIMEOUT 10
+#define EPOLL_TIMEOUT (30 * 1000)
 
 typedef const struct sockaddr_in SockAddr;
 
@@ -70,6 +72,11 @@ struct Tunnel {
     Connection dst;
 };
 
+typedef struct EpollServerArgs {
+    int *ssock;
+    int *esock;
+} EpollServerArgs;
+
 bool tunnel_new(Tunnel *tun, int src, int dst, SockAddr src_addr, SockAddr dst_addr);
 void tunnel_destroy(Tunnel *tun);
 bool connection_new(Connection *c, int sock, Tunnel *tun, SockAddr addr);
@@ -81,9 +88,9 @@ bool sockets_register(int epfd, Connection *src, Connection *dst);
 int epoll_add(int epfd, Socket *sock, uint32_t events);
 int epoll_mod(int epfd, Socket *sock, uint32_t events);
 int epoll_del(int epfd, Socket *sock);
-void handle_client_events(int epfd, Socket *sock, uint32_t events);
+void handle_client_events(Socket *sock, uint32_t events, bool shutting_down);
 bool handle_write(Connection *src, Connection *dst);
 bool handle_read(Connection *src);
-void *handle_server_epoll(void *ssock);
-void connection_cleanup(int epfd, Connection *src, Connection *dst);
+void *handle_server_epoll(void *args);
+void connection_cleanup(int epfd, Socket *sock, struct epoll_event *events, int idx, int nready);
 #endif // TPROXY_EPOLL_H

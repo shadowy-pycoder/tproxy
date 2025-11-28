@@ -32,6 +32,9 @@
 #include "tproxy_thread.h"
 #else
 #include "tproxy_epoll.h"
+#include <stdatomic.h>
+#include <sys/eventfd.h>
+atomic_bool shutting_down = false;
 #endif
 
 /*
@@ -96,6 +99,16 @@ void usage(void)
     exit(EXIT_FAILURE);
 }
 
+void singalHandler(int sig)
+{
+    if (!shutting_down) {
+        shutting_down = true;
+        signal(sig, SIG_IGN);
+    } else {
+        exit(1);
+    }
+}
+
 int main(int argc, char **argv)
 {
     char *ip;
@@ -117,18 +130,50 @@ int main(int argc, char **argv)
     printf("INFO: Starting %d threading servers\n", SERVER_WORKERS);
 #else
     printf("INFO: Starting %d epoll servers\n", SERVER_WORKERS);
+    int *efd = (int *)malloc(sizeof(int));
+    *efd = eventfd(0, EFD_NONBLOCK);
+    struct sigaction new_action;
+    new_action.sa_handler = singalHandler;
+    sigemptyset(&new_action.sa_mask);
+    new_action.sa_flags = 0;
+    sigaction(SIGINT, &new_action, NULL);
+    sigaction(SIGTERM, &new_action, NULL);
+    sigaction(SIGHUP, &new_action, NULL);
+    pthread_t threads[SERVER_WORKERS];
 #endif
     for (int i = 0; i < SERVER_WORKERS; i++) {
-        int *server_sock = malloc(sizeof(int));
-        *server_sock = create_tproxy_server(ip, port);
+        int *ssock = (int *)malloc(sizeof(int));
+        *ssock = create_tproxy_server(ip, port);
         pthread_t thread;
 #ifdef USE_THREADS
-        pthread_create(&thread, NULL, handle_server_thread, server_sock);
-#else
-        pthread_create(&thread, NULL, handle_server_epoll, server_sock);
-#endif // USE_THREADS
+        pthread_create(&thread, NULL, handle_server_thread, ssock);
         pthread_detach(thread);
+#else
+        EpollServerArgs *esargs = (EpollServerArgs *)malloc(sizeof(EpollServerArgs));
+        esargs->ssock = ssock;
+        esargs->esock = efd;
+        pthread_create(&thread, NULL, handle_server_epoll, esargs);
+        threads[i] = thread;
+#endif // USE_THREADS
     }
-    pause();
+#ifdef USE_THREADS
+    while (true)
+        pause();
+#else
+    while (!shutting_down)
+        pause();
+    printf("INFO: Shutting down %d servers on %s:%d... Please wait\n", SERVER_WORKERS, ip, port);
+    uint64_t one = 1;
+    if (write(*efd, &one, sizeof(one)) < 0) {
+        printf("ERROR: writing to eventfd failed: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < SERVER_WORKERS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+    close(*efd);
+    free(efd);
+    printf("INFO: %d servers on %s:%d gracefully shut down\n", SERVER_WORKERS, ip, port);
+#endif
     return 0;
 }
