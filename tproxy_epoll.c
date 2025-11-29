@@ -20,12 +20,16 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
@@ -168,9 +172,47 @@ bool setup_tproxy_connection(int epfd, int src_sock, SockAddr src_addr)
             close(src_sock);
             return false;
         }
+        int send_buffer_size = SND_BUF_SIZE;
+        int recv_buffer_size = RECV_BUF_SIZE;
+        if (setsockopt(dst_sock, SOL_SOCKET, SO_SNDBUF, &send_buffer_size, sizeof(send_buffer_size)) < 0) {
+            printf("ERROR: [%d] Setting SO_SNDBUF option for destination failed: %s\n", tid, strerror(errno));
+            close(src_sock);
+            close(dst_sock);
+            return false;
+        }
+        if (setsockopt(dst_sock, SOL_SOCKET, SO_RCVBUF, &recv_buffer_size, sizeof(recv_buffer_size)) < 0) {
+            printf("ERROR: [%d] Setting SO_RCVBUF option for destination failed: %s\n", tid, strerror(errno));
+            close(src_sock);
+            close(dst_sock);
+            return false;
+        }
         int enable = 1;
+        if (setsockopt(src_sock, SOL_SOCKET, SO_KEEPALIVE, (const char *)&enable, sizeof(enable)) < 0) {
+            printf("ERROR: [%d] Setting SOL_SOCKET option for source failed: %s\n", tid, strerror(errno));
+            close(src_sock);
+            close(dst_sock);
+            return false;
+        }
+        if (setsockopt(src_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&enable, sizeof(enable)) < 0) {
+            printf("ERROR: [%d] Setting TCP_NODELAY option for source failed: %s\n", tid, strerror(errno));
+            close(src_sock);
+            close(dst_sock);
+            return false;
+        }
         if (setsockopt(dst_sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
             printf("ERROR: [%d] Setting IP_TRANSPARENT option for destination failed: %s\n", tid, strerror(errno));
+            close(src_sock);
+            close(dst_sock);
+            return false;
+        }
+        if (setsockopt(dst_sock, SOL_SOCKET, SO_KEEPALIVE, (const char *)&enable, sizeof(enable)) < 0) {
+            printf("ERROR: [%d] Setting SOL_SOCKET option for source failed: %s\n", tid, strerror(errno));
+            close(src_sock);
+            close(dst_sock);
+            return false;
+        }
+        if (setsockopt(dst_sock, IPPROTO_TCP, TCP_NODELAY, (const char *)&enable, sizeof(enable)) < 0) {
+            printf("ERROR: [%d] Setting TCP_NODELAY option for source failed: %s\n", tid, strerror(errno));
             close(src_sock);
             close(dst_sock);
             return false;

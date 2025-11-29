@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -63,15 +64,29 @@ int create_tproxy_server(char *host, int port)
     }
     int enable = 1;
     if (setsockopt(server_sock, IPPROTO_IP, IP_TRANSPARENT, (const char *)&enable, sizeof(enable)) < 0) {
-        printf("ERROR: Setting option failed: %s\n", strerror(errno));
+        printf("ERROR: Setting IP_TRANSPARENT option failed: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    if (setsockopt(server_sock, IPPROTO_TCP, TCP_DEFER_ACCEPT, (const char *)&enable, sizeof(enable)) < 0) {
+        printf("ERROR: Setting TCP_DEFER_ACCEPT option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&enable, sizeof(enable)) < 0) {
-        printf("ERROR: Setting option failed: %s\n", strerror(errno));
+        printf("ERROR: Setting SO_REUSEADDR option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEPORT, (const char *)&enable, sizeof(enable)) < 0) {
-        printf("ERROR: Setting option failed: %s\n", strerror(errno));
+        printf("ERROR: Setting SO_REUSEPORT option failed: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    int send_buffer_size = SND_BUF_SIZE;
+    int recv_buffer_size = RECV_BUF_SIZE;
+    if (setsockopt(server_sock, SOL_SOCKET, SO_SNDBUF, &send_buffer_size, sizeof(send_buffer_size)) < 0) {
+        printf("ERROR: Setting SO_SNDBUF option failed: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    if (setsockopt(server_sock, SOL_SOCKET, SO_RCVBUF, &recv_buffer_size, sizeof(recv_buffer_size)) < 0) {
+        printf("ERROR: Setting SO_RCVBUF option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
     struct sockaddr_in server_addr = { 0 };
@@ -99,11 +114,11 @@ void usage(void)
     exit(EXIT_FAILURE);
 }
 
-void singalHandler(int sig)
+void singal_handler(int sig)
 {
     if (!shutting_down) {
         shutting_down = true;
-        signal(sig, SIG_IGN);
+        signal(sig, SIG_DFL);
     } else {
         exit(1);
     }
@@ -133,7 +148,7 @@ int main(int argc, char **argv)
     int *efd = (int *)malloc(sizeof(int));
     *efd = eventfd(0, EFD_NONBLOCK);
     struct sigaction new_action;
-    new_action.sa_handler = singalHandler;
+    new_action.sa_handler = singal_handler;
     sigemptyset(&new_action.sa_mask);
     new_action.sa_flags = 0;
     sigaction(SIGINT, &new_action, NULL);

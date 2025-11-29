@@ -38,10 +38,10 @@ lsmod | grep -q '^tcp_bbr' || modprobe tcp_bbr
 sysctl -w net.ipv4.tcp_congestion_control=bbr
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.core.default_qdisc=fq
-sysctl -w net.core.rmem_default=262144
-sysctl -w net.core.wmem_default=262144
-sysctl -w net.core.rmem_max=262144
-sysctl -w net.core.wmem_max=262144
+sysctl -w net.core.rmem_default=4194304
+sysctl -w net.core.wmem_default=4194304
+sysctl -w net.core.rmem_max=4194304
+sysctl -w net.core.wmem_max=4194304
 iptables -t filter -F CTPROXY_APP 2>/dev/null || true
 iptables -t filter -D FORWARD -j CTPROXY_APP 2>/dev/null || true
 iptables -t filter -X CTPROXY_APP 2>/dev/null || true
