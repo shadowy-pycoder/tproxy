@@ -79,6 +79,7 @@ int create_tproxy_server(char *host, int port)
         printf("ERROR: Setting SO_REUSEPORT option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
+#ifndef USE_THREADS
     int send_buffer_size = SND_BUF_SIZE;
     int recv_buffer_size = RECV_BUF_SIZE;
     if (setsockopt(server_sock, SOL_SOCKET, SO_SNDBUF, &send_buffer_size, sizeof(send_buffer_size)) < 0) {
@@ -89,6 +90,7 @@ int create_tproxy_server(char *host, int port)
         printf("ERROR: Setting SO_RCVBUF option failed: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
+#endif
     struct sockaddr_in server_addr = { 0 };
     if (inet_pton(AF_INET, host, &server_addr.sin_addr) < 0) {
         printf("ERROR: %s is not valid IP address\n", host);
@@ -114,6 +116,7 @@ void usage(void)
     exit(EXIT_FAILURE);
 }
 
+#ifndef USE_THREADS
 void singal_handler(int sig)
 {
     if (!shutting_down) {
@@ -123,6 +126,7 @@ void singal_handler(int sig)
         exit(1);
     }
 }
+#endif
 
 int main(int argc, char **argv)
 {
