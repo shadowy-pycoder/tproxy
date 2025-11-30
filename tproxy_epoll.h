@@ -17,10 +17,6 @@
 #ifndef TPROXY_EPOLL_H
 #define TPROXY_EPOLL_H
 
-/* Create a TCP server listening on address specified by host and port parameters.
- *
- * This function either returns a valid file descriptor or exits with non-zero status code
- */
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
